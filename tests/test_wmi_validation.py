@@ -58,9 +58,11 @@ class RpmValidationTests(unittest.TestCase):
     def setUp(self):
         self.worker = WMIWorker(queue.Queue(), "GB_WMIACPI_Get", "GB_WMIACPI_Set")
 
-    def test_swap_preferred_when_in_range(self):
-        # 0x0109 byte-swaps to 0x0901 (2305 RPM), both plausible -> heuristic picks the swap
-        self.assertEqual(self.worker._validate_rpm(0x0109), 0x0901)
+    def test_raw_preferred_when_plausible(self):
+        # raw-plausible-first (raw-first hides neither stalled fans nor real
+        # ones): 0x0109 = 265 RPM is plausible, so the raw value wins over the
+        # 0x0901 (2305) byte-swap
+        self.assertEqual(self.worker._validate_rpm(0x0109), 265)
 
     def test_raw_fallback_when_swap_implausible(self):
         # 0x09A6 swaps to 0xA609 (42497) which exceeds 8000 -> raw 2470 wins
@@ -69,9 +71,10 @@ class RpmValidationTests(unittest.TestCase):
     def test_zero_is_zero(self):
         self.assertEqual(self.worker._validate_rpm(0), 0)
 
-    def test_small_raw_gets_swapped_up(self):
-        # heuristic prefers the byte-swapped reading: raw 30 -> 0x1E00 = 7680
-        self.assertEqual(self.worker._validate_rpm(30), 7680)
+    def test_small_raw_is_stall_zero(self):
+        # raw-plausible-first: raw 30 is plausible and <= 50 -> 0 (stalled fan
+        # must read 0, not a phantom 7680 from the byte-swap)
+        self.assertEqual(self.worker._validate_rpm(30), 0)
 
     def test_implausible_is_error(self):
         self.assertEqual(self.worker._validate_rpm(0xFFFF), -1)

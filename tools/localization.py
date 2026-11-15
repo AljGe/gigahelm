@@ -1,57 +1,56 @@
 # -*- coding: utf-8 -*-
 """
-Handles app i18n.
-Loads language strings from a JSON file and provides the translation function.
+处理应用的国际化(i18n)。
+
+这里就是唯一的字符串来源：没有 JSON 语言文件，没有磁盘 IO。
+新增字符串只需要同时添加到下面两个字典里，`tests.test_localization`
+会强制两个字典的键集合完全一致。
 """
 
-import json
-import os
-import sys
-from typing import Dict, Optional
+from typing import Dict
 from config.settings import DEFAULT_LANGUAGE, KNOWN_LANGUAGES
 
 # ==============================================================================
-# Default translation dictionaries
+# 默认翻译字典
 # ==============================================================================
 
-# --- Default English translations ---
+# --- 默认英文翻译 ---
 DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
-    # Window and UI elements
+    # 窗口和UI元素
     "window_title": "Gigahelm",
-    "cpu_temp_label": "CPU Temp:",
-    "gpu_temp_label": "GPU Temp:",
-    "cpu_fan_rpm_label": "CPU Fan RPM:",
-    "gpu_fan_rpm_label": "GPU Fan RPM:",
-    "applied_target_label": "Applied/Target:",
-    "fan_mode_label": "Fan Mode:",
     "mode_bios": "BIOS",
     "mode_auto": "Auto",
     "mode_custom": "Custom",
     "custom_speed_label": "Custom Speed:",
-    "charge_policy_label": "Charge Policy:",
     "charge_threshold_label": "Charge Limit:",
-    "cpu_curve_button": "CPU Curve",
-    "gpu_curve_button": "GPU Curve",
-    "reset_curve_button": "Reset Curve",
-    "battery_info_label": "Battery:",
+    "cpu_curve_button": "CPU",
+    "gpu_curve_button": "GPU",
+    "reset_curve_button": "Reset",
     "controller_notice_title": "Controller notice",
     "start_on_boot_label": "Start on Boot",
     "percent_unit": "%",
-    "ec_spin_floor_label": "EC spin floor",
     "rpm_unit": " RPM",
     "celsius_unit": "°C",
-    "temp_label": "Temp",
-    "speed_label": "Speed",
     "rename_button": "Rename",
     "delete_button": "Delete",
 
-    # Tooltips
+    # 仪表盘卡片
+    "card_fan_title": "Fan control",
+    "card_fan_desc": "Choose how the fans respond to temperature.",
+    "card_battery_title": "Battery care",
+    "card_battery_desc": "Cap the charge level to slow battery wear.",
+    "curve_card_title": "Fan curves",
+    "stat_cpu_caption": "CPU",
+    "stat_gpu_caption": "GPU",
+    "stat_fan_caption": "Fan output",
+    "stat_battery_caption": "Battery",
+    "stat_gpu_asleep": "asleep",
+
+    # 工具提示
     "curve_point_tooltip": "Temp: {temp}°C, Speed: {speed}%",
-    # Added missing translation keys with helpful hints
-    "canvas_tooltip": "Double-click empty space to add a point.\nRight-click a point to delete it.",
-    "add_point_info": "Double-click empty space to add point.",
-    "delete_point_info": "Right-click point to delete.",
-    "profile_button_tooltip": "Left-Click: Activate\nRight-Click: Save\nDouble-Click: Manage",
+    # 添加缺失的翻译键并提供有用的提示
+    "canvas_tooltip": "Double-click empty space to add a point.\nRight-click a point to delete it.\nSafety floors: 80°C→40%, 85°C→60%, 90°C→80%.",
+    "profile_chip_tooltip": "Click to activate. Right-click for more actions.",
     "add_profile_tooltip": "Add a new profile",
     "start_on_boot_tooltip": "Automatically start with Windows via Task Scheduler.",
     "fan_mode_tooltip": "Select the fan control mode.\nBIOS: Control by hardware\nAuto: Control by temperature curve\nCustom: Fixed fan speed",
@@ -62,28 +61,51 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "editable_label_tooltip": "Double-click to enter a value manually.",
     "maximize_button_tooltip": "Maximize",
     "restore_button_tooltip": "Restore",
-    
-    # Status messages
+
+    # 配置文件菜单
+    "profile_menu_activate": "Activate",
+    "profile_menu_save": "Save current settings here",
+    "profile_menu_manage": "Rename or delete…",
+
+    # 主题
+    "theme_mode_system": "System",
+    "theme_mode_dark": "Dark",
+    "theme_mode_light": "Light",
+    "theme_button_tooltip": "Theme: {mode} — click to change",
+    "theme_changed_status": "Theme: {mode}",
+
+    # 状态消息
     "initializing": "Initializing...",
     "paused": "Paused (Hidden)",
     "saving_config": "Config saved.",
     "shutting_down": "Shutting down...",
     "profile_saved_message": "Settings saved to '{profile_name}'.",
     "value_not_available": "---",
-    "fan_display_auto_format": "{applied}% / {target}% (EC {raw})",
-    "fan_display_custom_format": "{applied}% (EC {raw})",
-    "battery_display_format": "{policy} / {limit} / {health}% / {cycles}",
+    "fan_unavailable_text": "EC controls the fans",
+    "fan_label_cpu": "CPU fan",
+    "fan_label_gpu": "GPU fan",
+    "fan_stall_warning": "Fan stall: {fans} reports 0 RPM at {duty}% duty.",
+    "emergency_recovered": "Emergency fan speed (80%) is still latched. Select a fan mode to take control.",
+    "config_save_error": "Could not save the config: {error}",
+    "config_corrupt_recovered": "The config was corrupt; defaults were loaded. A copy was kept at {path}.",
+    "curve_shared_duty_tooltip": "CPU and GPU curves share one duty: the higher target wins.",
+    "fan_display_auto_format": "Curve target {target}% · EC {raw}",
+    "fan_display_custom_format": "Fixed speed · EC {raw}",
+    "fan_display_bios_format": "Hardware controlled",
+    "battery_display_format": "Health {health}% · {cycles} cycles",
+    "battery_health_tooltip": "Battery health = Windows full-charge capacity / design capacity. The EC health code is not a percentage.",
     "charge_readback_mismatch": "Charge limit readback {actual}% != requested {requested}%",
 
-    # Errors and dialogs
+    # 状态卡片页脚
+    "stat_fan_footer_format": "Target {target}% · EC {raw}",
+    "stat_battery_footer_format": "Health {health}% · {cycles} cycles",
+
+    # 错误和对话框
     "wmi_init_error_title": "WMI Error",
     "wmi_init_error_msg": "Failed to initialize WMI.\nEnsure Gigabyte drivers are installed.\n\nError: {error}",
     "wmi_error": "WMI Error",
     "temp_error": "ERR",
-    "gpu_asleep_display": "asleep",
     "rpm_error": "ERR",
-    "delete_point_error_title": "Delete Error",
-    "delete_point_error_msg": "Cannot delete. Minimum of {min_points} points required.",
     "rename_profile_title": "Manage Profile",
     "rename_profile_label": "Enter a new name for '{old_name}':",
     "delete_profile_title": "Delete Profile",
@@ -93,8 +115,6 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "add_profile_error_title": "Invalid Name",
     "add_profile_empty_name_error": "Profile name cannot be empty.",
     "add_profile_duplicate_name_error": "A profile named '{name}' already exists.",
-    "admin_required_title": "Administrator Privileges Required",
-    "admin_required_msg": "This application requires administrator privileges.",
     "elevation_error_title": "Elevation Error",
     "elevation_error_msg": "Failed to elevate privileges. Please run as administrator.",
     "task_scheduler_error_msg": "Task Scheduler failed.\nCommand: {command}\n\nError: {error}",
@@ -109,53 +129,52 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "cli_profile_and_policy_applied": "Activated '{profile}' and applied charge policy '{policy}'.",
     "cli_no_action": "No command action was provided.",
 
-    # Tray menu
+    # 托盘菜单
     "tray_menu_show_hide": "Show / Hide",
     "tray_menu_quit": "Quit",
 
-    # Language display names
+    # 语言显示名称
     "lang_display_name_en": "English",
     "lang_display_name_zh": "中文",
 }
 
-# --- Default Chinese translations ---
+# --- 默认中文翻译 ---
 DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
-    # Window and UI elements
+    # 窗口和UI元素
     "window_title": "Gigahelm",
-    "cpu_temp_label": "CPU 温度:",
-    "gpu_temp_label": "GPU 温度:",
-    "cpu_fan_rpm_label": "CPU 风扇转速:",
-    "gpu_fan_rpm_label": "GPU 风扇转速:",
-    "applied_target_label": "应用/目标:",
-    "fan_mode_label": "风扇模式:",
     "mode_bios": "BIOS",
     "mode_auto": "自动",
     "mode_custom": "自定义",
     "custom_speed_label": "自定义速度:",
-    "charge_policy_label": "充电策略:",
     "charge_threshold_label": "充电上限:",
-    "cpu_curve_button": "CPU 曲线",
-    "gpu_curve_button": "GPU 曲线",
-    "reset_curve_button": "重置曲线",
-    "battery_info_label": "电池:",
+    "cpu_curve_button": "CPU",
+    "gpu_curve_button": "GPU",
+    "reset_curve_button": "重置",
     "controller_notice_title": "控制器通知",
     "start_on_boot_label": "开机启动",
     "percent_unit": "%",
-    "ec_spin_floor_label": "EC 起转下限",
     "rpm_unit": " RPM",
     "celsius_unit": "°C",
-    "temp_label": "温度",
-    "speed_label": "速度",
     "rename_button": "重命名",
     "delete_button": "删除",
 
-    # Tooltips
+    # 仪表盘卡片
+    "card_fan_title": "风扇控制",
+    "card_fan_desc": "选择风扇如何响应温度。",
+    "card_battery_title": "电池养护",
+    "card_battery_desc": "限制充电上限，延缓电池老化。",
+    "curve_card_title": "风扇曲线",
+    "stat_cpu_caption": "CPU",
+    "stat_gpu_caption": "GPU",
+    "stat_fan_caption": "风扇输出",
+    "stat_battery_caption": "电池",
+    "stat_gpu_asleep": "休眠中",
+
+    # 工具提示
     "curve_point_tooltip": "温度: {temp}°C, 速度: {speed}%",
-    # Added missing translation keys with helpful hints
-    "canvas_tooltip": "双击空白区域以添加点。\n右键单击一个点以删除它。",
-    "add_point_info": "双击空白区域以添加点。",
-    "delete_point_info": "右键单击点以删除。",
-    "profile_button_tooltip": "左键: 激活\n右键: 保存\n双击: 管理",
+    # 添加缺失的翻译键并提供有用的提示
+    "canvas_tooltip": "双击空白区域以添加点。\n右键单击一个点以删除它。\n安全下限：80°C→40%，85°C→60%，90°C→80%。",
+    "profile_chip_tooltip": "左键启用，右键更多操作。",
     "add_profile_tooltip": "添加新配置文件",
     "start_on_boot_tooltip": "通过任务计划程序随 Windows 自动启动。",
     "fan_mode_tooltip": "选择风扇控制模式。\nBIOS: 由硬件控制\n自动: 根据温度曲线控制\n自定义: 固定风扇速度",
@@ -166,28 +185,51 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "editable_label_tooltip": "双击以手动输入数值。",
     "maximize_button_tooltip": "最大化",
     "restore_button_tooltip": "还原",
-    
-    # Status messages
+
+    # 配置文件菜单
+    "profile_menu_activate": "启用",
+    "profile_menu_save": "保存当前设置到此处",
+    "profile_menu_manage": "重命名或删除…",
+
+    # 主题
+    "theme_mode_system": "跟随系统",
+    "theme_mode_dark": "深色",
+    "theme_mode_light": "浅色",
+    "theme_button_tooltip": "主题：{mode} — 点击切换",
+    "theme_changed_status": "主题：{mode}",
+
+    # 状态消息
     "initializing": "正在初始化...",
     "paused": "已暂停 (最小化)",
     "saving_config": "配置已保存。",
     "shutting_down": "正在关闭...",
     "profile_saved_message": "设置已保存至 '{profile_name}'。",
     "value_not_available": "---",
-    "fan_display_auto_format": "{applied}% / {target}% (EC {raw})",
-    "fan_display_custom_format": "{applied}% (EC {raw})",
-    "battery_display_format": "{policy} / {limit} / {health}% / {cycles}",
+    "fan_unavailable_text": "EC 接管风扇控制",
+    "fan_label_cpu": "CPU 风扇",
+    "fan_label_gpu": "GPU 风扇",
+    "fan_stall_warning": "风扇停转：{fans} 在 {duty}% 占空比下报告 0 RPM。",
+    "emergency_recovered": "紧急风扇转速（80%）仍保持锁定。请选择风扇模式以重新接管。",
+    "config_save_error": "无法保存配置：{error}",
+    "config_corrupt_recovered": "配置文件损坏，已加载默认值。副本保存在 {path}。",
+    "curve_shared_duty_tooltip": "CPU 与 GPU 曲线共用一个占空比：取较高的目标值。",
+    "fan_display_auto_format": "曲线目标 {target}% · EC {raw}",
+    "fan_display_custom_format": "固定转速 · EC {raw}",
+    "fan_display_bios_format": "硬件控制",
+    "battery_display_format": "健康 {health}% · {cycles} 次循环",
+    "battery_health_tooltip": "电池健康 = Windows 满电容量 / 设计容量。EC 的健康值是状态码，不是百分比。",
     "charge_readback_mismatch": "充电上限回读 {actual}% 与请求 {requested}% 不一致",
 
-    # Errors and dialogs
+    # 状态卡片页脚
+    "stat_fan_footer_format": "目标 {target}% · EC {raw}",
+    "stat_battery_footer_format": "健康 {health}% · {cycles} 次循环",
+
+    # 错误和对话框
     "wmi_init_error_title": "WMI 错误",
     "wmi_init_error_msg": "WMI 初始化失败。\n请确保已安装技嘉驱动程序。\n\n错误: {error}",
     "wmi_error": "WMI 错误",
     "temp_error": "错误",
-    "gpu_asleep_display": "休眠中",
     "rpm_error": "错误",
-    "delete_point_error_title": "删除错误",
-    "delete_point_error_msg": "无法删除。至少需要 {min_points} 个点。",
     "rename_profile_title": "管理配置文件",
     "rename_profile_label": "为 '{old_name}' 输入新名称:",
     "delete_profile_title": "删除配置文件",
@@ -197,8 +239,6 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "add_profile_error_title": "无效名称",
     "add_profile_empty_name_error": "配置文件名称不能为空。",
     "add_profile_duplicate_name_error": "名为 '{name}' 的配置文件已存在。",
-    "admin_required_title": "需要管理员权限",
-    "admin_required_msg": "此应用程序需要管理员权限才能运行。",
     "elevation_error_title": "提权失败",
     "elevation_error_msg": "无法提升权限。请以管理员身份运行。",
     "task_scheduler_error_msg": "任务计划程序失败。\n命令: {command}\n\n错误: {error}",
@@ -213,67 +253,25 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "cli_profile_and_policy_applied": "已激活 '{profile}' 并应用充电策略 '{policy}'。",
     "cli_no_action": "未提供可执行的命令动作。",
 
-    # Tray menu
+    # 托盘菜单
     "tray_menu_show_hide": "显示 / 隐藏",
     "tray_menu_quit": "退出",
 
-    # Language display names
+    # 语言显示名称
     "lang_display_name_en": "English",
     "lang_display_name_zh": "中文",
 }
 
 # ==============================================================================
-# Core translation logic
+# 核心翻译逻辑
 # ==============================================================================
 
-_translations: Dict[str, Dict[str, str]] = {}
+_translations: Dict[str, Dict[str, str]] = {
+    "en": DEFAULT_ENGLISH_TRANSLATIONS,
+    "zh": DEFAULT_CHINESE_TRANSLATIONS,
+}
 _current_language: str = DEFAULT_LANGUAGE
-_translations_loaded: bool = False
-_language_file_path: Optional[str] = None
 
-def load_translations(file_path: str):
-    global _translations, _translations_loaded, _language_file_path
-    _language_file_path = file_path
-    
-    # Default data now includes both English and Chinese
-    default_data = {
-        "en": DEFAULT_ENGLISH_TRANSLATIONS.copy(),
-        "zh": DEFAULT_CHINESE_TRANSLATIONS.copy()
-    }
-    loaded_data = {}
-    
-    try:
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                loaded_data = json.load(f)
-            if not isinstance(loaded_data, dict):
-                raise json.JSONDecodeError("Invalid format", "", 0)
-        else:
-            raise FileNotFoundError
-    except (FileNotFoundError, json.JSONDecodeError):
-        try:
-            dir_name = os.path.dirname(file_path)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-            # Write the default data containing both languages to the file
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(default_data, f, indent=4, ensure_ascii=False)
-            loaded_data = default_data
-        except IOError as e:
-            print(f"Could not write default language file: {e}", file=sys.stderr)
-            loaded_data = default_data
-
-    # The final translation dict starts from the hardcoded defaults for robustness
-    final_translations = default_data.copy()
-    for lang, trans in loaded_data.items():
-        if isinstance(trans, dict):
-            # Use English as the base, then override with the loaded translations
-            merged = DEFAULT_ENGLISH_TRANSLATIONS.copy()
-            merged.update(trans)
-            final_translations[lang] = merged
-    
-    _translations = final_translations
-    _translations_loaded = True
 
 def set_language(lang_code: str):
     global _current_language
@@ -282,19 +280,21 @@ def set_language(lang_code: str):
     else:
         _current_language = DEFAULT_LANGUAGE
 
+
 def tr(key: str, **kwargs) -> str:
-    # First try the current language's translation
+    # 首先尝试获取当前语言的翻译
     lang_dict = _translations.get(_current_language, {})
     translation = lang_dict.get(key)
-    
-    # Fall back to the hardcoded English if the current language lacks it
+
+    # 如果当前语言没有，则回退到硬编码的英文
     if translation is None:
         translation = DEFAULT_ENGLISH_TRANSLATIONS.get(key, key)
-        
+
     try:
         return translation.format(**kwargs)
     except (KeyError, ValueError):
         return translation
+
 
 def get_available_languages() -> Dict[str, str]:
     available = {}
@@ -303,6 +303,7 @@ def get_available_languages() -> Dict[str, str]:
         display_name = _translations[code].get(display_name_key, KNOWN_LANGUAGES.get(code, code.upper()))
         available[code] = display_name
     return available
+
 
 def get_current_language() -> str:
     return _current_language

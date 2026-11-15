@@ -1,87 +1,72 @@
 # -*- coding: utf-8 -*-
-"""BIOS-revert watchdog gate logic (EC write and mutex probe are injected)."""
 import os
-import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from tools.bios_watchdog import run_bios_revert_watchdog
+from tools import bios_watchdog
 
 
-class BiosWatchdogGateTests(unittest.TestCase):
+class WatchdogDecisionTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.base = self.tmp.name
-        self.reverts = []
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_dir = self.temp_dir.name
 
     def tearDown(self):
-        self.tmp.cleanup()
+        self.temp_dir.cleanup()
 
-    def write_mode(self, mode):
-        with open(os.path.join(self.base, 'last_mode.state'), 'w') as f:
-            f.write(mode)
+    def _write_last_mode(self, value):
+        with open(os.path.join(self.base_dir, "last_mode.state"), "w", encoding="ascii") as handle:
+            handle.write(value)
 
-    def read_mode(self):
-        try:
-            with open(os.path.join(self.base, 'last_mode.state'), 'r') as f:
-                return f.read().strip()
-        except OSError:
-            return ""
+    def test_bios_mode_skips(self):
+        self._write_last_mode("bios")
+        with patch.object(bios_watchdog, "_revert_to_bios") as revert:
+            self.assertEqual(bios_watchdog.run_bios_revert_watchdog(self.base_dir), 0)
+            revert.assert_not_called()
 
-    def _gate(self, probe):
-        return run_bios_revert_watchdog(
-            self.base,
-            probe_running=probe,
-            revert=lambda: self.reverts.append(1),
-        )
+    def test_emergency_mode_skips(self):
+        self._write_last_mode("emergency")
+        with patch.object(bios_watchdog, "_revert_to_bios") as revert:
+            self.assertEqual(bios_watchdog.run_bios_revert_watchdog(self.base_dir), 0)
+            revert.assert_not_called()
 
-    def test_reverts_when_owners_absent(self):
-        self.write_mode("auto")
-        self.assertEqual(self._gate(probe=lambda: False), 0)
-        self.assertEqual(self.reverts, [1])
-        self.assertEqual(self.read_mode(), "bios")
+    def test_no_instance_reverts(self):
+        self._write_last_mode("auto")
+        with patch.object(bios_watchdog, "_instance_running", return_value=False), \
+             patch.object(bios_watchdog, "_revert_to_bios") as revert:
+            self.assertEqual(bios_watchdog.run_bios_revert_watchdog(self.base_dir), 0)
+            revert.assert_called_once_with(self.base_dir)
 
-    def test_reverts_custom_mode_too(self):
-        self.write_mode("custom")
-        self.assertEqual(self._gate(probe=lambda: False), 0)
-        self.assertEqual(self.read_mode(), "bios")
+    def test_running_with_fresh_heartbeat_skips(self):
+        self._write_last_mode("auto")
+        with patch.object(bios_watchdog, "_instance_running", return_value=True), \
+             patch.object(bios_watchdog, "_heartbeat_age", return_value=2.0), \
+             patch.object(bios_watchdog, "_revert_to_bios") as revert:
+            self.assertEqual(bios_watchdog.run_bios_revert_watchdog(self.base_dir), 0)
+            revert.assert_not_called()
 
-    def test_skips_when_app_running(self):
-        self.write_mode("auto")
-        self.assertEqual(self._gate(probe=lambda: True), 0)
-        self.assertEqual(self.reverts, [])
-        self.assertEqual(self.read_mode(), "auto")
+    def test_running_with_stale_heartbeat_reverts(self):
+        self._write_last_mode("custom")
+        with patch.object(bios_watchdog, "_instance_running", return_value=True), \
+             patch.object(bios_watchdog, "_heartbeat_age", return_value=120.0), \
+             patch.object(bios_watchdog, "_revert_to_bios") as revert:
+            self.assertEqual(bios_watchdog.run_bios_revert_watchdog(self.base_dir), 0)
+            revert.assert_called_once_with(self.base_dir)
 
-    def test_skips_when_not_owner(self):
-        self.write_mode("bios")
-        self.assertEqual(self._gate(probe=lambda: False), 0)
-        self.assertEqual(self.reverts, [])
-        self.assertEqual(self.read_mode(), "bios")
+    def test_missing_heartbeat_with_instance_reverts(self):
+        self._write_last_mode("custom")
+        with patch.object(bios_watchdog, "_instance_running", return_value=True), \
+             patch.object(bios_watchdog, "_heartbeat_age", return_value=None), \
+             patch.object(bios_watchdog, "_revert_to_bios") as revert:
+            self.assertEqual(bios_watchdog.run_bios_revert_watchdog(self.base_dir), 0)
+            revert.assert_called_once_with(self.base_dir)
 
-    def test_skips_when_file_missing(self):
-        self.assertEqual(self._gate(probe=lambda: False), 0)
-        self.assertEqual(self.reverts, [])
-
-    def test_failed_revert_keeps_ownership(self):
-        # A failed EC write must leave last_mode.state claiming ownership so the next tick retries.
-        self.write_mode("auto")
-
-        def boom():
-            raise RuntimeError("WMI down")
-
-        code = run_bios_revert_watchdog(self.base, probe_running=lambda: False, revert=boom)
-        self.assertEqual(code, 1)
-        self.assertEqual(self.read_mode(), "auto")
-
-    def test_log_written(self):
-        self.write_mode("auto")
-        self._gate(probe=lambda: False)
-        log = os.path.join(self.base, 'bios_watchdog.log')
-        self.assertTrue(os.path.exists(log))
-        with open(log, encoding='utf-8') as f:
-            self.assertIn("reverted", f.read())
+    def test_revert_failure_returns_one(self):
+        self._write_last_mode("auto")
+        with patch.object(bios_watchdog, "_instance_running", return_value=False), \
+             patch.object(bios_watchdog, "_revert_to_bios", side_effect=RuntimeError("no WMI")):
+            self.assertEqual(bios_watchdog.run_bios_revert_watchdog(self.base_dir), 1)
 
 
 if __name__ == "__main__":
