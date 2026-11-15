@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-一个自定义控件，平时显示为QLabel，双击后变为可编辑的QLineEdit。
+Custom widget that normally shows a QLabel and turns into an editable QLineEdit on double-click.
 """
-# 使用显式导入代替通配符导入
+# Explicit imports instead of a wildcard import
 from .qt import (
     QWidget, Signal, QLabel, QLineEdit, QStackedLayout, QIntValidator,
     Qt, QMouseEvent
@@ -10,7 +10,7 @@ from .qt import (
 from typing import Optional, cast
 
 class EditableLabel(QWidget):
-    """一个可双击编辑的标签控件。"""
+    """Label widget that becomes editable on double-click."""
     editingFinished = Signal(int)
 
     def __init__(self, unit: str = "", parent: Optional[QWidget] = None):
@@ -32,39 +32,39 @@ class EditableLabel(QWidget):
         self.setFocusProxy(self.line_edit)
 
     def text(self) -> str:
-        """获取标签的文本（不含单位）。"""
+        """Get the label text (without the unit)."""
         return self.label.text().replace(self.unit, "").strip()
 
     def value(self) -> int:
-        """获取标签表示的整数值。"""
+        """Get the integer value shown by the label."""
         try:
             return int(self.text())
         except ValueError:
             return 0
 
     def setText(self, text: str):
-        """设置标签的文本。"""
+        """Set the label text."""
         self.label.setText(f"{text}{self.unit}")
 
     def setValue(self, value: int):
-        """设置标签的数值。"""
+        """Set the label value."""
         self.setText(str(value))
-        # 确保隐藏的编辑框中的内容也同步更新
+        # Keep the hidden line edit's content in sync too
         if self.line_edit.text() != str(value):
             self.line_edit.setText(str(value))
 
     def setAlignment(self, alignment: Qt.AlignmentFlag):
-        """设置标签和编辑框的对齐方式。"""
+        """Set the alignment of both label and line edit."""
         self.label.setAlignment(alignment)
         self.line_edit.setAlignment(alignment)
 
     def setMinimumWidth(self, minw: int):
-        """设置最小宽度。"""
+        """Set the minimum width."""
         self.label.setMinimumWidth(minw)
         super().setMinimumWidth(minw)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        """处理双击事件，切换到编辑模式。"""
+        """Handle double-click: switch to edit mode."""
         if self.isEnabled():
             self.line_edit.setText(self.text())
             cast(QStackedLayout, self.layout()).setCurrentWidget(self.line_edit)
@@ -73,7 +73,7 @@ class EditableLabel(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def _finish_editing(self):
-        """完成编辑，提交值并切换回标签模式。"""
+        """Finish editing: commit the value and switch back to label mode."""
         new_value = self.line_edit.text()
         if new_value:
             self.setValue(int(new_value))
@@ -81,6 +81,6 @@ class EditableLabel(QWidget):
         cast(QStackedLayout, self.layout()).setCurrentWidget(self.label)
 
     def setEnabled(self, enabled: bool):
-        """重写 setEnabled 以同时控制内部控件。"""
+        """Override setEnabled to control the inner widget as well."""
         self.label.setEnabled(enabled)
         super().setEnabled(enabled)

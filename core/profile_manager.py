@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-负责管理所有与配置文件相关的状态和持久化逻辑。
-这个类封装了配置文件的加载、保存、创建、重命名和激活。
+Manages all profile-related state and persistence logic.
+This class encapsulates loading, saving, creating, renaming, and activating profiles.
 """
 import os
 import json
@@ -15,7 +15,7 @@ from .state import AppState, ProfileState
 from config.settings import DEFAULT_PROFILE_SETTINGS
 
 class ProfileManager(QObject):
-    """管理应用配置文件的中心类。"""
+    """Central class that manages the application's profiles."""
     
     def __init__(self, app_state: AppState, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -23,7 +23,7 @@ class ProfileManager(QObject):
         self.config_path = self.state.paths.control_config
 
     def load_config(self):
-        """从JSON文件加载配置，填充状态。"""
+        """Load the config from the JSON file and populate state."""
         config_data = self._read_config_file()
         
         self.state.set_language(config_data.get("language", "en"))
@@ -34,9 +34,9 @@ class ProfileManager(QObject):
         if not profiles_data:
             profiles_data = {"Config 1": copy.deepcopy(DEFAULT_PROFILE_SETTINGS)}
         
-        # 加载或生成配置文件顺序
+        # Load or generate the profile order
         profile_order = config_data.get("profile_order", sorted(profiles_data.keys()))
-        # 确保顺序列表和配置文件字典同步
+        # Keep the order list and the profiles dict in sync
         profile_order = [name for name in profile_order if name in profiles_data]
         for name in profiles_data:
             if name not in profile_order:
@@ -50,13 +50,13 @@ class ProfileManager(QObject):
         self.state.set_active_profile_name(active_profile_name)
 
     def save_config(self):
-        """将当前状态保存到JSON配置文件。原子写入：先写临时文件再替换，避免中途崩溃损坏配置。"""
+        """Save the current state to the JSON config file. Atomic write: write to a temp file, then replace, so a mid-write crash cannot corrupt the config."""
         config_data = {
             "language": self.state.get_language(),
             "start_on_boot": self.state.get_start_on_boot(),
             "active_profile_name": self.state.get_active_profile_name(),
             "window_geometry": self.state.window_geometry,
-            "profile_order": self.state.profile_order, # 保存顺序
+            "profile_order": self.state.profile_order, # Preserve the order
             "profiles": self.state.get_profiles_for_config()
         }
         temp_path = ""
@@ -108,7 +108,7 @@ class ProfileManager(QObject):
         self.state.rename_profile(old_name, new_name)
         self.save_config()
             
-    # 删除配置文件的接口
+    # Interface for deleting profiles
     def delete_profile(self, name: str):
         self.state.delete_profile(name)
         self.save_config()

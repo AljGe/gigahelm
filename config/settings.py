@@ -1,59 +1,59 @@
 # -*- coding: utf-8 -*-
 """
-风扇和电池控制应用的全局常量和默认设置。
+Global constants and default settings for the fan and battery control app.
 """
 from typing import List, Dict, Any
 
 # ==============================================================================
-# 应用信息
+# App info
 # ==============================================================================
 APP_NAME: str = "FanBatteryControl"
-APP_ORGANIZATION_NAME: str = "FanBatteryControl" # Qt用于设置路径
-APP_INTERNAL_NAME: str = "FanBatteryControl" # 用于互斥锁、任务名称等
+APP_ORGANIZATION_NAME: str = "FanBatteryControl" # Used by Qt for settings paths
+APP_INTERNAL_NAME: str = "FanBatteryControl" # Used for mutex, task name, etc.
 
 # ==============================================================================
-# 默认配置值
+# Default configuration values
 # ==============================================================================
-DEFAULT_LANGUAGE: str = "en" # 默认语言代码 (ISO 639-1)
+DEFAULT_LANGUAGE: str = "en" # Default language code (ISO 639-1)
 
-# --- 核心状态常量 ---
+# --- Core state constants ---
 FAN_MODE_BIOS = "bios"
-FAN_MODE_AUTO = "auto" # 软件控制的曲线
-FAN_MODE_CUSTOM = "custom" # 软件控制的自定义速度
+FAN_MODE_AUTO = "auto" # Software-controlled curve
+FAN_MODE_CUSTOM = "custom" # Software-controlled custom speed
 FAN_MODE_UNKNOWN = "unknown"
 CHARGE_POLICY_BIOS = "bios"
 CHARGE_POLICY_CUSTOM = "custom"
 
-# --- 电池控制常量 ---
+# --- Battery control constants ---
 BATTERY_POLICY_CODES: Dict[str, int] = {"bios": 0, "custom": 4}
 BATTERY_CODE_POLICIES: Dict[int, str] = {0: "bios", 1: "custom", 4: "custom"}
 
-# --- 默认配置文件设置 ---
-# 定义了 *每个* 配置文件的结构和默认值
+# --- Default profile settings ---
+# Defines the structure and defaults for *each* profile
 DEFAULT_CPU_FAN_TABLE: List[List[int]] = [[50, 0], [60, 15], [70, 25], [80, 40], [85, 60], [90, 80], [95, 100]]
 DEFAULT_GPU_FAN_TABLE: List[List[int]] = [[40, 0], [55, 15], [65, 25], [70, 40], [75, 60], [80, 80], [85, 100]]
 DEFAULT_FAN_MODE: str = FAN_MODE_AUTO
-DEFAULT_CUSTOM_FAN_SPEED: int = 30 # 百分比
+DEFAULT_CUSTOM_FAN_SPEED: int = 30 # percent
 DEFAULT_CHARGE_POLICY: str = CHARGE_POLICY_BIOS
-DEFAULT_CHARGE_THRESHOLD: int = 80 # 百分比
+DEFAULT_CHARGE_THRESHOLD: int = 80 # percent
 
-# --- 默认控制逻辑和时序 (每个配置文件) ---
-DEFAULT_GUI_UPDATE_INTERVAL_MS: int = 1000 # GUI刷新状态的频率
-DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS: int = 1500 # 在自动模式下调整风扇速度朝向目标的频率
-DEFAULT_FAN_HYSTERESIS_PERCENT: int = 5 # 触发目标重新计算所需的温度变化
-DEFAULT_MIN_ADJUSTMENT_STEP: int = 1 # 每个调整间隔的最小风扇速度变化
-DEFAULT_MAX_ADJUSTMENT_STEP: int = 5 # 每个调整间隔的最大风扇速度变化
+# --- Default control logic and timing (per profile) ---
+DEFAULT_GUI_UPDATE_INTERVAL_MS: int = 1000 # How often the GUI refreshes status
+DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS: int = 1500 # How often fan speed is adjusted toward the target in auto mode
+DEFAULT_FAN_HYSTERESIS_PERCENT: int = 5 # Temperature change required to trigger a target recalculation
+DEFAULT_MIN_ADJUSTMENT_STEP: int = 1 # Minimum fan speed change per adjustment interval
+DEFAULT_MAX_ADJUSTMENT_STEP: int = 5 # Maximum fan speed change per adjustment interval
 
-# --- 默认曲线绘制和UI外观 (每个配置文件) ---
-DEFAULT_MIN_DISPLAY_TEMP_C: int = 40 # 曲线图X轴显示的最小温度
-DEFAULT_CURVE_POINT_PICKER_RADIUS: float = 8.0 # 图上点的点击半径
-DEFAULT_SPLINE_POINTS: int = 100 # 平滑曲线插值线的点数
+# --- Default curve plotting and UI appearance (per profile) ---
+DEFAULT_MIN_DISPLAY_TEMP_C: int = 40 # Minimum temperature shown on the curve plot X axis
+DEFAULT_CURVE_POINT_PICKER_RADIUS: float = 8.0 # Pick radius for points on the plot
+DEFAULT_SPLINE_POINTS: int = 100 # Number of points on the interpolated smooth curve
 DEFAULT_CPU_CURVE_COLOR: str = '#00AEEF'
 DEFAULT_GPU_CURVE_COLOR: str = '#7AC143'
 DEFAULT_POINT_COLOR_ACTIVE: str = '#FFFFFF'
 DEFAULT_POINT_SIZE_ACTIVE: int = 7
-DEFAULT_CPU_TEMP_INDICATOR_COLOR: str = '#FF6347' # 番茄色
-DEFAULT_GPU_TEMP_INDICATOR_COLOR: str = '#90EE90' # 亮绿色
+DEFAULT_CPU_TEMP_INDICATOR_COLOR: str = '#FF6347' # tomato
+DEFAULT_GPU_TEMP_INDICATOR_COLOR: str = '#90EE90' # light green
 DEFAULT_LINE_WIDTH_ACTIVE: float = 2.0
 DEFAULT_LINE_WIDTH_INACTIVE: float = 1.0
 DEFAULT_ALPHA_ACTIVE: float = 1.0
@@ -63,7 +63,7 @@ DEFAULT_AXES_BG_COLOR: str = '#2A2D30'
 DEFAULT_GRID_COLOR: str = '#555555'
 DEFAULT_AXES_LABEL_COLOR: str = '#E0E0E0'
 
-# --- 将所有默认配置文件设置合并到一个字典中 ---
+# --- All default profile settings merged into one dict ---
 DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "cpu_fan_table": [list(p) for p in DEFAULT_CPU_FAN_TABLE],
     "gpu_fan_table": [list(p) for p in DEFAULT_GPU_FAN_TABLE],
@@ -96,14 +96,14 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
 }
 
 # ==============================================================================
-# WMI 配置
+# WMI configuration
 # ==============================================================================
 WMI_NAMESPACE: str = r"root\WMI"
 DEFAULT_WMI_GET_CLASS: str = "GB_WMIACPI_Get"
 DEFAULT_WMI_SET_CLASS: str = "GB_WMIACPI_Set"
 WMI_REQUEST_TIMEOUT_S: float = 5.0
 
-# WMI方法常量命名统一
+# Unified naming for WMI method constants
 GET_CPU_TEMP: str = "getCpuTemp"
 GET_GPU_TEMP1: str = "getGpuTemp1"
 GET_GPU_TEMP2: str = "getGpuTemp2"
@@ -129,8 +129,8 @@ GET_BATTERY_HEALTH: str = "GetBatteryHealth"
 GET_BATT_CYC: str = "getBattCyc"
 GET_BATT_CYC1: str = "getBattCyc1"
 
-# --- 内部信号 ---
-# 使用内部信号代替字符串，更健壮
+# --- Internal signals ---
+# Internal signal objects instead of strings, more robust
 class WMIInternalSignal:
     STOP = object()
     POLL_CORE_SENSORS = object()
@@ -144,7 +144,7 @@ CHARGE_THRESHOLD_READ_ERROR_VALUE: int = -1
 INIT_APPLIED_PERCENTAGE: int = -1
 
 # ==============================================================================
-# 控制逻辑参数
+# Control logic parameters
 # ==============================================================================
 MIN_TEMP_C: int = 0
 MAX_TEMP_C: int = 100
@@ -156,7 +156,7 @@ MIN_CURVE_POINTS: int = 2
 MIN_POINTS_FOR_INTERPOLATION: int = 2
 
 # ==============================================================================
-# 任务计划程序 / 单例实例
+# Task Scheduler / single instance
 # ==============================================================================
 TASK_SCHEDULER_NAME: str = f"{APP_INTERNAL_NAME} Startup Task"
 STARTUP_ARG_MINIMIZED: str = "--minimized"
@@ -177,7 +177,7 @@ COMMAND_RELOAD_ONLY: int = 3
 COMMAND_CLI_ACTION: int = 4
 
 # ==============================================================================
-# 杂项
+# Misc
 # ==============================================================================
 TOOLTIP_DELAY_MS: int = 500
 KNOWN_LANGUAGES: Dict[str, str] = {"en": "English", "zh": "中文"}

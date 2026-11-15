@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-应用入口，负责初始化、单例检查、管理员权限检查，并启动Qt事件循环。
-使用最可靠的方式一次性确定所有权威路径，并将其注入PathManager，从根本上解决打包后的路径问题。
+Application entry point: initialization, single-instance check, admin-rights check, and starting the Qt event loop.
+Determines all authoritative paths once via the most reliable method and injects them into PathManager, eliminating packaged-mode path problems at the root.
 """
 
 import sys
@@ -11,7 +11,7 @@ import atexit
 import ctypes
 from datetime import datetime
 
-# 打包/任务模式下 stdout 可能为 None 或 cp1252 管道；统一为 UTF-8 且不可编码字符替换，避免打印中文时崩溃
+# In packaged/scheduled-task modes stdout may be None or a cp1252 pipe; force UTF-8 with replacement for unencodable chars so printing never crashes
 if os.name == "nt":
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
@@ -23,8 +23,8 @@ if os.name == "nt":
 import argparse
 from typing import Optional, Any, Dict, Tuple
 
-# --- 权威路径确定 ---
-# 这是整个应用中唯一应该确定核心路径的地方。
+# --- Authoritative path resolution ---
+# This is the only place in the entire app where core paths are determined.
 EXECUTABLE_PATH: str = ""
 BASE_DIR: str = ""
 MAIN_SCRIPT_PATH: str = ""
@@ -34,21 +34,21 @@ try:
     if os.name == 'nt':
         buffer = ctypes.create_unicode_buffer(2048)
         ctypes.windll.kernel32.GetModuleFileNameW(None, buffer, len(buffer))
-        # EXECUTABLE_PATH 始终是用户双击的那个 .exe 文件，或脚本模式下的 python.exe
+        # EXECUTABLE_PATH is always the .exe the user launched, or python.exe in script mode
         EXECUTABLE_PATH = buffer.value
     else:
-        # 为非Windows系统提供回退
+        # Fallback for non-Windows systems
         EXECUTABLE_PATH = sys.executable
 
     executable_name = os.path.basename(EXECUTABLE_PATH).lower()
     is_script_mode = executable_name in ('python.exe', 'pythonw.exe')
 
     if is_script_mode:
-        # 脚本模式下，基础目录是主脚本所在目录
+        # In script mode, the base directory is the main script's directory
         MAIN_SCRIPT_PATH = os.path.abspath(__file__ if "__file__" in locals() else sys.argv[0])
         BASE_DIR = os.path.dirname(MAIN_SCRIPT_PATH)
     else:
-        # 打包模式下，基础目录是 .exe 文件所在的目录
+        # In packaged mode, the base directory is the .exe's directory
         BASE_DIR = os.path.dirname(EXECUTABLE_PATH)
 
 except Exception:
@@ -60,19 +60,18 @@ try:
 except Exception as e:
     print(f"Fatal error: failed to change working directory to '{BASE_DIR}'. External files will not be found. Error: {e}", file=sys.stderr)
 
-# --- 导入项目模块 ---
+# --- Project module imports ---
 from gui.qt import QApplication, QMessageBox, QCoreApplication
 
 from config.settings import (
     APP_NAME, APP_ORGANIZATION_NAME, APP_INTERNAL_NAME, STARTUP_ARG_MINIMIZED,
     COMMAND_CLI_ACTION, CHARGE_POLICY_BIOS, CHARGE_POLICY_CUSTOM,
-    MIN_CHARGE_PERCENT, MAX_CHARGE_PERCENT,
-    MUTEX_NAME, WMI_NAMESPACE, DEFAULT_WMI_SET_CLASS,
-    SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_STATUS
+    MIN_CHARGE_PERCENT, MAX_CHARGE_PERCENT
 )
 from tools.localization import load_translations, tr, set_language, _translations_loaded
 from tools.system_utils import is_admin, run_as_admin
 from tools.task_scheduler import create_startup_task, is_startup_task_registered
+from tools.bios_watchdog import run_bios_revert_watchdog
 from tools.single_instance import (
     check_single_instance, release_mutex, write_hwnd_to_shared_memory
 )
@@ -89,7 +88,7 @@ _emergency_latched = False
 
 
 def _parse_cli_arguments(argv: list[str]) -> Tuple[argparse.Namespace, Optional[str]]:
-    """解析并验证命令行参数。返回(args, error_message)。"""
+    """Parse and validate command-line arguments. Returns (args, error_message)."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(STARTUP_ARG_MINIMIZED, action="store_true", dest="minimized")
     parser.add_argument("--profile", type=str, default=None)
@@ -97,86 +96,33 @@ def _parse_cli_arguments(argv: list[str]) -> Tuple[argparse.Namespace, Optional[
     parser.add_argument("--charge-policy", type=str, choices=[CHARGE_POLICY_BIOS, CHARGE_POLICY_CUSTOM], default=None)
     parser.add_argument("--charge-threshold", type=int, default=None)
     parser.add_argument("--revert-bios", action="store_true", dest="revert_bios")
+    parser.add_argument("--diagnose", action="store_true", dest="diagnose")
 
     try:
         args, unknown = parser.parse_known_args(argv)
     except SystemExit:
-        return argparse.Namespace(), "命令行参数格式无效。"
+        return argparse.Namespace(), "Invalid command-line arguments."
 
     if unknown:
         return args, f"Unknown command-line arguments: {' '.join(unknown)}"
 
     if args.charge_threshold is not None and args.charge_policy != CHARGE_POLICY_CUSTOM:
-        return args, "--charge-threshold 只能和 --charge-policy custom 一起使用。"
+        return args, "--charge-threshold can only be used together with --charge-policy custom."
 
     if args.charge_threshold is not None and not (MIN_CHARGE_PERCENT <= args.charge_threshold <= MAX_CHARGE_PERCENT):
         return args, f"--charge-threshold must be between {MIN_CHARGE_PERCENT}-{MAX_CHARGE_PERCENT}."
 
     if args.profile is not None and not args.profile.strip():
-        return args, "--profile 不能为空。"
+        return args, "--profile must not be empty."
 
     if args.show_mode is None and (args.profile is not None or args.charge_policy is not None):
         args.show_mode = "notify"
 
     return args, None
 
-# --- H1 安全网：BIOS 回退看门狗（供计划任务调用） ---
-def run_bios_revert_watchdog() -> int:
-    """GFBC 拥有风扇控制权（last_mode.state 为 auto/custom）但没有任何实例在运行时，
-    把风扇交还 BIOS、写回 last_mode.state，然后静默退出。硬杀进程（任务管理器/断电）
-    不触发任何 Python 清理逻辑，这个独立入口是唯一的兜底。"""
-    def log(message: str):
-        try:
-            with open(os.path.join(BASE_DIR, 'bios_watchdog.log'), 'a', encoding='utf-8', errors='replace') as f:
-                f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n")
-        except Exception:
-            pass
-
-    try:
-        last_mode = ""
-        try:
-            with open(os.path.join(BASE_DIR, 'last_mode.state'), 'r') as f:
-                last_mode = f.read().strip()
-        except OSError:
-            pass
-        if last_mode not in ('auto', 'custom'):
-            log(f"skip: GFBC does not own fan control (last_mode={last_mode or '<empty>'})")
-            return 0
-
-        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-        mutex = kernel32.CreateMutexW(None, True, MUTEX_NAME)
-        try:
-            if mutex and ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
-                log("skip: an app instance is running")
-                return 0
-            import wmi
-            import pythoncom
-            pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
-            try:
-                conn = wmi.WMI(namespace=WMI_NAMESPACE)
-                instances = conn.query(f"SELECT * FROM {DEFAULT_WMI_SET_CLASS}")
-                if not instances:
-                    raise RuntimeError("could not obtain GB_WMIACPI_Set instance")
-                setter = instances[0]
-                getattr(setter, SET_AUTO_FAN_STATUS)(Data=1.0)
-                getattr(setter, SET_CUSTOM_FAN_STATUS)(Data=0.0)
-                with open(os.path.join(BASE_DIR, 'last_mode.state'), 'w') as f:
-                    f.write('bios')
-                log(f"reverted fan control to BIOS (was {last_mode})")
-            finally:
-                pythoncom.CoUninitialize()
-        finally:
-            if mutex:
-                kernel32.ReleaseMutex(mutex)
-                kernel32.CloseHandle(mutex)
-        return 0
-    except Exception as error:
-        log(f"error: {error!r}")
-        return 1
-
-# --- 崩溃安全机制 ---
+# --- Crash-safety mechanism ---
 def handle_exception(exc_type, exc_value, exc_traceback):
-    """全局异常处理器。自动或自定义模式下在进程内锁存紧急风扇速度。"""
+    """Global exception handler. In auto or custom mode, latches the emergency fan speed in-process."""
     global _emergency_latched
     try:
         last_mode_file = os.path.join(BASE_DIR, 'last_mode.state')
@@ -190,7 +136,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         print(f"CRASH HANDLER: error while running safety mechanism: {safety_e}", file=sys.stderr)
 
     error_msg_detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    # stderr 可能是 cp1252 编码的管道（打印中文会二次崩溃并跳过清理），落盘 UTF-8 崩溃日志
+    # stderr may be a cp1252-encoded pipe (printing Chinese text would crash a second time and skip cleanup); write the crash log to disk as UTF-8
     try:
         with open(os.path.join(BASE_DIR, 'crash.log'), 'a', encoding='utf-8', errors='replace') as crash_file:
             crash_file.write(f"[{datetime.now().isoformat(timespec='seconds')}] Unhandled exception:\n{error_msg_detail}\n")
@@ -215,10 +161,10 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     print("Forcing exit after exception.")
     os._exit(1)
 
-# --- 清理函数 ---
+# --- Cleanup ---
 _cleanup_called = False
 def perform_cleanup():
-    """在退出时执行应用清理操作。"""
+    """Run application cleanup on exit."""
     global _app_services_for_cleanup, _cleanup_called
     if _cleanup_called:
         return
@@ -242,9 +188,9 @@ def perform_cleanup():
 
     print("Cleanup complete.")
 
-# --- 主函数 ---
+# --- Main function ---
 def main():
-    """主应用函数。"""
+    """Main application function."""
     global _app_services_for_cleanup
 
     cli_args, cli_error = _parse_cli_arguments(sys.argv[1:])
@@ -257,7 +203,20 @@ def main():
         if os.name == 'nt' and not is_admin():
             run_as_admin(EXECUTABLE_PATH, BASE_DIR)
             sys.exit(1)
-        sys.exit(run_bios_revert_watchdog())
+        sys.exit(run_bios_revert_watchdog(BASE_DIR))
+
+    if cli_args.diagnose:
+        sys.excepthook = handle_exception
+        if os.name == 'nt' and not is_admin():
+            run_as_admin(EXECUTABLE_PATH, BASE_DIR)
+            sys.exit(1)
+        from tools.diagnose import run_diagnose
+        report_path = run_diagnose(BASE_DIR, is_admin())
+        try:
+            ctypes.windll.user32.MessageBoxW(0, f"Diagnostic report written to:\n{report_path}", APP_NAME, 0x40)
+        except Exception:
+            print(report_path)
+        sys.exit(0)
 
     sys.excepthook = handle_exception
     atexit.register(perform_cleanup)
@@ -272,8 +231,8 @@ def main():
             "charge_threshold": cli_args.charge_threshold
         }
 
-    # --- 初始化核心服务 ---
-    # 1. 创建路径管理器，注入所有权威路径
+    # --- Initialize core services ---
+    # 1. Create the path manager, injecting all authoritative paths
     path_manager = PathManager(
         base_dir=BASE_DIR,
         executable_path=EXECUTABLE_PATH,

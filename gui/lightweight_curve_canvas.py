@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-一个轻量级、基于QPainter的画布，用于显示和编辑风扇曲线。
-此版本实现了智能局部绘制和绘图对象缓存，以彻底解决CPU占用激增问题。
-实现了水平和垂直方向的智能联动调整，当拖拽点时，会自动调整相邻点以提供完全自由、流畅的编辑体验。
+A lightweight QPainter-based canvas for displaying and editing fan curves.
+This version implements smart partial painting and paint-object caching to fully eliminate CPU usage spikes.
+Implements smart linked adjustments on both axes: dragging a point automatically shifts adjacent points for a fully free, smooth editing experience.
 """
 
 from .qt import *
@@ -19,12 +19,12 @@ from tools.localization import tr
 from core.state import AppState, ProfileState
 from .tooltip_manager import tooltip_manager
 
-# 类型提示
+# Type hints
 FanTable = List[List[int]]
-CurveType = str  # 'cpu' 或 'gpu'
+CurveType = str  # 'cpu' or 'gpu'
 
 class LightweightCurveCanvas(QWidget):
-    """基于QPainter的交互式风扇曲线编辑画布。"""
+    """QPainter-based interactive fan curve editing canvas."""
     point_dragged = Signal(CurveType, int, float, float)
     transient_status_signal = Signal(str, int)
 
@@ -47,7 +47,7 @@ class LightweightCurveCanvas(QWidget):
         self._plot_area = QRectF()
         self._margins = {'left': 55, 'top': 20, 'right': 20, 'bottom': 35}
         
-        # 缓存绘图对象
+        # Cached paint objects
         self._background_pixmap: Optional[QPixmap] = None
         self._cached_cpu_curve_poly: Optional[QPolygonF] = None
         self._cached_gpu_curve_poly: Optional[QPolygonF] = None
@@ -66,7 +66,7 @@ class LightweightCurveCanvas(QWidget):
         self.setEnabled(self.state.get_is_fan_control_panel_enabled())
 
     def _connect_signals(self):
-        """订阅AppState和ProfileState的信号。"""
+        """Subscribes to AppState and ProfileState signals."""
         self.state.active_profile_changed.connect(self._on_active_profile_changed)
         self.state.active_curve_type_changed.connect(self.set_active_curve)
         self.state.cpu_temp_changed.connect(lambda t: self.update_temp_indicators(cpu_temp=t))
@@ -75,7 +75,7 @@ class LightweightCurveCanvas(QWidget):
 
     @Slot(ProfileState)
     def _on_active_profile_changed(self, profile: Optional[ProfileState]):
-        """当活动配置文件改变时，安全地重新连接信号。"""
+        """Safely reconnects signals when the active profile changes."""
         if self._current_profile and self._current_profile != profile:
             try:
                 self._current_profile.cpu_fan_table_changed.disconnect(self._on_cpu_curve_data_changed)
@@ -98,14 +98,14 @@ class LightweightCurveCanvas(QWidget):
     def _on_cpu_curve_data_changed(self, data: FanTable):
         self.cpu_curve_data = self._validate_and_sort(data)
         self._cpu_interpolator = None
-        self._recache_curves() # 数据变化时，重新缓存曲线
+        self._recache_curves() # Recache curves when data changes
         self.update()
 
     @Slot(list)
     def _on_gpu_curve_data_changed(self, data: FanTable):
         self.gpu_curve_data = self._validate_and_sort(data)
         self._gpu_interpolator = None
-        self._recache_curves() # 数据变化时，重新缓存曲线
+        self._recache_curves() # Recache curves when data changes
         self.update()
 
     @Slot()
@@ -113,8 +113,8 @@ class LightweightCurveCanvas(QWidget):
         profile = self.state.get_active_profile()
         if profile:
             self._appearance_settings = profile.to_dict()
-            self._background_pixmap = None # 外观变化时，背景需要重绘
-            self._recache_curves() # 曲线颜色可能变化，重新缓存
+            self._background_pixmap = None # Background needs repainting when appearance changes
+            self._recache_curves() # Curve colors may change, recache
             self.update()
 
     def _get_setting(self, key: str, default_override: Any = None) -> Any:
@@ -151,7 +151,7 @@ class LightweightCurveCanvas(QWidget):
 
     def resizeEvent(self, event: QResizeEvent):
         self._update_plot_area()
-        self._background_pixmap = None # 尺寸变化时，所有缓存失效
+        self._background_pixmap = None # All caches are invalid when the size changes
         self._recache_curves()
         super().resizeEvent(event)
 
@@ -409,54 +409,54 @@ class LightweightCurveCanvas(QWidget):
             self.update()
 
     def _drag_point(self, pos: QPointF):
-        """实现水平和垂直方向的完全自由、智能联动的拖拽。"""
+        """Fully free, smart linked dragging on both axes."""
         data = self.get_curve_data(self.active_curve_type)
         idx = self._dragging_point_index
         if idx is None: return
         
         temp, speed = self._widget_to_data_coords(pos)
         
-        # 1. 应用画布边界限制
+        # 1. Apply canvas boundary limits
         min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
         temp = max(min_temp, min(MAX_TEMP_C, temp))
         speed = max(MIN_FAN_PERCENT, min(MAX_FAN_PERCENT, speed))
         
-        # 2. 更新当前点的位置
+        # 2. Update the current point position
         data[idx] = [int(round(temp)), int(round(speed))]
         
-        # 3. 实时强制水平和垂直的连锁反应
+        # 3. Enforce horizontal and vertical chain reactions in real time
         self._enforce_temperature_separation_during_drag(data, idx)
         self._enforce_speed_monotonicity_during_drag(data, idx)
         
-        # 4. 更新状态并重绘
+        # 4. Update state and repaint
         setattr(self, f"_{self.active_curve_type}_interpolator", None)
         self._recache_curves()
         self.point_dragged.emit(self.active_curve_type, idx, temp, speed)
         self.update()
 
     def _enforce_speed_monotonicity_during_drag(self, data: FanTable, dragged_index: int):
-        """实时强制风扇速度的单调性（只能增加或持平）。"""
-        # 向前连锁（处理向下拖动）
+        """Enforces fan speed monotonicity in real time (may only increase or stay equal)."""
+        # Chain forward (handles dragging down)
         for i in range(dragged_index, 0, -1):
             if data[i][1] < data[i-1][1]:
                 data[i-1][1] = data[i][1]
         
-        # 向后连锁（处理向上拖动）
+        # Chain backward (handles dragging up)
         for i in range(dragged_index, len(data) - 1):
             if data[i][1] > data[i+1][1]:
                 data[i+1][1] = data[i][1]
 
     def _enforce_temperature_separation_during_drag(self, data: FanTable, dragged_index: int):
-        """实时强制温度点的最小间距和顺序。"""
+        """Enforces minimum spacing and ordering of temperature points in real time."""
         min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
         
-        # 向后连锁（处理向右拖动，推开右边的点）
+        # Chain backward (handles dragging right, pushing points right)
         for i in range(dragged_index, len(data) - 1):
             if data[i+1][0] <= data[i][0]:
                 new_temp = min(MAX_TEMP_C, data[i][0] + 1)
                 data[i+1][0] = new_temp
         
-        # 向前连锁（处理向左拖动，推开左边的点）
+        # Chain forward (handles dragging left, pushing points left)
         for i in range(dragged_index, 0, -1):
             if data[i-1][0] >= data[i][0]:
                 new_temp = max(min_temp, data[i][0] - 1)

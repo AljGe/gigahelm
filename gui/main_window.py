@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-主应用窗口(QMainWindow)，作为UI的中心控制器，
-连接用户操作与服务，并将状态更新分派给视图组件。
-此类现在负责通知AppServices UI的可见性，以实现智能轮询。
+Main application window (QMainWindow), the central UI controller.
+Connects user actions to services and dispatches state updates to view components.
+This class now notifies AppServices of UI visibility for smart polling.
 """
 import sys
 import time
@@ -51,7 +51,7 @@ class _WindowsResumeFilter(QAbstractNativeEventFilter):
         return False, 0
 
 class MainWindow(QMainWindow):
-    """主应用窗口。"""
+    """Main application window."""
     gui_tick = Signal()
     window_initialized_signal = Signal(int)
 
@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
 
         if self.start_minimized:
             if self.tray_icon: self.tray_icon.show()
-            # 即使最小化启动，也要正确设置初始UI可见性
+            # Set the initial UI visibility correctly even when starting minimized
             self.app_services.set_ui_visibility(False)
         else:
             self.show()
@@ -345,14 +345,14 @@ class MainWindow(QMainWindow):
             self._is_initialized = True
             QTimer.singleShot(0, lambda: self.window_initialized_signal.emit(int(self.winId())))
         
-        # 调用AppServices中的方法来处理UI可见性变化
+        # Call the AppServices method to handle UI visibility changes
         self.app_services.set_ui_visibility(True)
         self._start_gui_timer()
         super().showEvent(event)
 
     def hideEvent(self, event: QHideEvent):
         self.gui_update_timer.stop()
-        # 调用AppServices中的方法来处理UI可见性变化
+        # Call the AppServices method to handle UI visibility changes
         self.app_services.set_ui_visibility(False)
         super().hideEvent(event)
 
@@ -374,7 +374,7 @@ class MainWindow(QMainWindow):
 
             if msg.message == 0x00A3: # WM_NCLBUTTONDBLCLK
                 pos = QPoint(msg.lParam & 0xFFFF, (msg.lParam >> 16) & 0xFFFF)
-                # 检查双击是否在标题栏的非按钮区域
+                # Check whether the double-click is on a non-button area of the title bar
                 if self.title_bar.geometry().contains(self.mapFromGlobal(pos)):
                     child = self.title_bar.childAt(self.title_bar.mapFromGlobal(pos))
                     if not isinstance(child, (QPushButton, QComboBox)):
@@ -382,12 +382,12 @@ class MainWindow(QMainWindow):
                         return True, 0
 
             if msg.message == 0x0084: # WM_NCHITTEST
-                # 修复：使用 Qt 的 QCursor.pos() 自动处理高 DPI 缩放
-                # 不要用 msg.lParam，它在开启缩放的屏幕上返回物理像素，会导致底部控件被误判为窗口边缘
+                # Fix: use Qt's QCursor.pos() to handle high-DPI scaling automatically
+                # Do not use msg.lParam: on scaled displays it returns physical pixels, misclassifying bottom controls as window edges
                 global_pos = QCursor.pos()
                 pos = self.mapFromGlobal(global_pos)
                 
-                # 仅在窗口化状态下检查边框用于缩放
+                # Check resize borders only when windowed
                 if not self.isMaximized():
                     border = 8
                     on_left = pos.x() < border
@@ -404,12 +404,12 @@ class MainWindow(QMainWindow):
                     if on_top: return True, 12
                     if on_bottom: return True, 15
                 
-                # 检查标题栏区域
+                # Check the title bar area
                 if self.title_bar and pos.y() < self.title_bar.height():
                     local_pos = self.title_bar.mapFromGlobal(global_pos)
                     child = self.title_bar.childAt(local_pos)
                     
-                    # 递归检查，确保下拉框等复杂控件不会被误判为拖拽区
+                    # Recursive check so complex controls like dropdowns are not mistaken for the drag area
                     is_interactive = False
                     current_child = child
                     while current_child:
@@ -421,7 +421,7 @@ class MainWindow(QMainWindow):
                     if is_interactive:
                         result = super().nativeEvent(event_type, message)
                         return (bool(result[0]), int(result[1])) if isinstance(result, (tuple, list)) and len(result) == 2 else (False, 0)
-                    return True, 2 # HTCAPTION (返回 2 让 Windows 接管标题栏拖拽)
+                    return True, 2 # HTCAPTION (returning 2 lets Windows take over title bar dragging)
             
             result = super().nativeEvent(event_type, message)
             return (bool(result[0]), int(result[1])) if isinstance(result, (tuple, list)) and len(result) == 2 else (False, 0)

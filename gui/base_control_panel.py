@@ -1,8 +1,8 @@
-# gui/base_control_panel.py (替换整个文件)
+# gui/base_control_panel.py (replaces the entire file)
 # -*- coding: utf-8 -*-
 """
-提供一个可复用的基础UI面板(BaseControlPanel)，用于统一创建和管理包含模式选择和滑块的控制区域。
-该基类现在完全由 AppState (硬件的真实状态) 驱动其显示，确保UI与硬件同步。
+Provides a reusable base UI panel (BaseControlPanel) for uniformly creating and managing control areas with mode selection and a slider.
+The base class is now driven entirely by AppState (the real hardware state) for its display, keeping the UI in sync with the hardware.
 """
 from .qt import *
 from .tooltip_manager import tooltip_manager
@@ -14,9 +14,9 @@ from typing import Dict, Any, List, Tuple, Optional, Union
 
 class BaseControlPanel(QFrame):
     """
-    一个可配置的基础QFrame，包含一组模式单选按钮和一个关联的滑块。
-    它通过调用ProfileManager来【设置】期望状态，但通过连接到
-    AppState的信号来【响应式地更新】自身，以反映硬件的真实状态。
+    A configurable base QFrame containing a set of mode radio buttons and an associated slider.
+    It calls ProfileManager to set the desired state, but reactively updates
+    itself via AppState signals to reflect the real hardware state.
     """
     
     def __init__(self, config: Dict[str, Any], state: AppState, profile_manager: ProfileManager, parent: Optional[QWidget] = None):
@@ -34,12 +34,12 @@ class BaseControlPanel(QFrame):
         
         self.slider_debounce_timer = QTimer(self)
         self.slider_debounce_timer.setSingleShot(True)
-        self.slider_debounce_timer.setInterval(300) # 300ms延迟
+        self.slider_debounce_timer.setInterval(300) # 300ms delay
         
         self._init_ui()
         self._connect_signals()
         
-        # 初始化时，从 AppState 获取真实状态并更新UI
+        # On init, read the real state from AppState and update the UI
         self._update_all_displays_from_app_state()
 
     def _init_ui(self):
@@ -75,7 +75,7 @@ class BaseControlPanel(QFrame):
         tooltip_manager.register(self.value_label, "editable_label_tooltip")
 
     def _connect_signals(self):
-        # UI -> ProfileManager (用户意图)
+        # UI -> ProfileManager (user intent)
         for mode_name, radio in self.mode_radios.items():
             radio.toggled.connect(lambda checked, name=mode_name: 
                 self.profile_manager.update_active_profile_data(self.config["profile_mode_attr"], name) if checked else None)
@@ -84,15 +84,15 @@ class BaseControlPanel(QFrame):
         self.slider_debounce_timer.timeout.connect(self._commit_slider_value)
         self.value_label.editingFinished.connect(self._commit_label_value)
 
-        # AppState (硬件真实状态) -> UI (显示)
-        # 动态连接到 AppState 的信号
+        # AppState (real hardware state) -> UI (display)
+        # Dynamically connect to the AppState signal
         mode_signal = getattr(self.state, self.config["app_state_mode_attr"] + "_changed")
         mode_signal.connect(self._update_mode_display)
         
         value_signal = getattr(self.state, self.config["app_state_value_attr"] + "_changed")
         value_signal.connect(self._update_value_display)
         
-        # 风扇面板需要额外监听全局启用/禁用状态
+        # The fan panel additionally listens to the global enable/disable state
         if self.config.get("is_fan_control", False):
             self.state.is_fan_control_panel_enabled_changed.connect(
                 lambda: self._update_mode_display(self.state.get_applied_fan_mode())
@@ -121,8 +121,8 @@ class BaseControlPanel(QFrame):
         self.profile_manager.update_active_profile_data(self.config["profile_value_attr"], final_value)
 
     def _update_all_displays_from_app_state(self):
-        """从 AppState 获取当前所有真实值并更新UI。"""
-        # 动态调用 AppState 的 getter 方法
+        """Reads all current real values from AppState and updates the UI."""
+        # Dynamically call the AppState getter methods
         mode_getter = getattr(self.state, "get_" + self.config["app_state_mode_attr"])
         value_getter = getattr(self.state, "get_" + self.config["app_state_value_attr"])
         
@@ -150,14 +150,14 @@ class BaseControlPanel(QFrame):
 
     @Slot(int)
     def _update_value_display(self, value: int):
-        if value < 0: return # 忽略无效值 (如 -1)
+        if value < 0: return # Ignore invalid values (e.g. -1)
         
-        # 更新滑块
+        # Update the slider
         self.slider.blockSignals(True)
         self.slider.setValue(value)
         self.slider.blockSignals(False)
         
-        # 更新标签
+        # Update the label
         self.value_label.blockSignals(True)
         self.value_label.setValue(value)
         self.value_label.blockSignals(False)
@@ -170,5 +170,5 @@ class BaseControlPanel(QFrame):
         
         self.slider_label.setText(tr(self.config["slider_label_key"]))
         self.value_label.unit = tr('percent_unit')
-        # 重新翻译时也从 AppState 刷新
+        # Also refresh from AppState when retranslating
         self._update_all_displays_from_app_state()

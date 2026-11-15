@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-提供功能以确保只有一个应用实例使用Windows上的命名互斥锁和共享内存运行。
-处理现有窗口的激活和实例间通信。
+Ensures only one app instance runs via a named mutex and shared memory on Windows.
+Handles activating the existing window and inter-instance communication.
 """
 
 import sys
@@ -10,17 +10,17 @@ import ctypes
 import json
 from typing import Optional, Any, Dict
 
-# 从设置导入名称、大小、应用名称和命令
+# Import names, sizes, app name, and commands from settings
 from config.settings import (
     MUTEX_NAME, SHARED_MEM_NAME, SHARED_MEM_SIZE, APP_NAME,
     SHARED_MEM_HWND_OFFSET, SHARED_MEM_HWND_SIZE, SHARED_MEM_COMMAND_OFFSET,
     SHARED_MEM_PAYLOAD_OFFSET, SHARED_MEM_PAYLOAD_SIZE, COMMAND_NONE,
     COMMAND_RELOAD_AND_SHOW, COMMAND_RELOAD_ONLY
 )
-# 从本地化导入消息
+# Import messages from localization
 from .localization import tr
 
-# --- Win32 API 导入和设置 ---
+# --- Win32 API imports and setup ---
 _mutex_handle: Optional[int] = None
 _shared_mem_handle: Optional[int] = None
 _shared_mem_view: Optional[int] = None
@@ -31,13 +31,13 @@ if os.name == 'nt':
         from ctypes import wintypes
         import win32con
 
-        # 常量
+        # Constants
         ERROR_ALREADY_EXISTS = 183
         INVALID_HANDLE_VALUE = -1
         PAGE_READWRITE = 0x04
         FILE_MAP_ALL_ACCESS = 0xF001F
 
-        # 函数原型
+        # Function prototypes
         kernel32 = ctypes.windll.kernel32
         user32 = ctypes.windll.user32
 
@@ -49,7 +49,7 @@ if os.name == 'nt':
         ReleaseMutex = kernel32.ReleaseMutex
         CloseHandle = kernel32.CloseHandle
 
-        # 共享内存函数
+        # Shared memory functions
         CreateFileMappingW = kernel32.CreateFileMappingW
         CreateFileMappingW.restype = wintypes.HANDLE
         CreateFileMappingW.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR]
@@ -62,7 +62,7 @@ if os.name == 'nt':
         UnmapViewOfFile.restype = wintypes.BOOL
         UnmapViewOfFile.argtypes = [wintypes.LPCVOID]
 
-        # 激活函数
+        # Activation functions
         IsWindow = user32.IsWindow
         SetForegroundWindow = user32.SetForegroundWindow
         ShowWindow = user32.ShowWindow
@@ -74,13 +74,13 @@ if os.name == 'nt':
         print(f"Warning: failed to load Win32 modules for single-instance check: {e}", file=sys.stderr)
         _single_instance_check_enabled = False
 else:
-    # 在非Windows系统上禁用此功能
+    # Disable this feature on non-Windows systems
     _single_instance_check_enabled = False
 
-# --- 共享内存管理 ---
+# --- Shared memory management ---
 
 def _create_or_open_shared_memory() -> bool:
-    """创建或打开命名共享内存块。"""
+    """Creates or opens the named shared memory block."""
     global _shared_mem_handle, _shared_mem_view
     if not _single_instance_check_enabled: return False
 
@@ -99,7 +99,7 @@ def _create_or_open_shared_memory() -> bool:
     return True
 
 def write_hwnd_to_shared_memory(hwnd: int):
-    """将窗口句柄（HWND）写入共享内存的指定位置。"""
+    """Writes the window handle (HWND) to the specified shared memory location."""
     global _shared_mem_view
     if not _single_instance_check_enabled or not _shared_mem_view:
         return
@@ -109,15 +109,15 @@ def write_hwnd_to_shared_memory(hwnd: int):
         if len(hwnd_str) >= SHARED_MEM_HWND_SIZE:
             raise ValueError("HWND string is too large for its shared memory block")
 
-        # 将HWND写入缓冲区的指定偏移量
+        # Write the HWND at the specified offset in the buffer
         buffer = (ctypes.c_char * SHARED_MEM_HWND_SIZE).from_address(_shared_mem_view + SHARED_MEM_HWND_OFFSET)
-        ctypes.memset(_shared_mem_view + SHARED_MEM_HWND_OFFSET, 0, SHARED_MEM_HWND_SIZE) # 先清零
+        ctypes.memset(_shared_mem_view + SHARED_MEM_HWND_OFFSET, 0, SHARED_MEM_HWND_SIZE) # Zero it first
         buffer.value = hwnd_str
     except Exception as e:
         print(f"Error writing HWND to shared memory: {e}", file=sys.stderr)
 
 def read_hwnd_from_shared_memory() -> Optional[int]:
-    """从共享内存的指定位置读取窗口句柄（HWND）。"""
+    """Reads the window handle (HWND) from the specified shared memory location."""
     global _shared_mem_view
     if not _single_instance_check_enabled or not _shared_mem_view:
         return None
@@ -131,7 +131,7 @@ def read_hwnd_from_shared_memory() -> Optional[int]:
         return None
 
 def write_command_to_shared_memory(command: int):
-    """将命令字节写入共享内存的指定位置。"""
+    """Writes the command byte to the specified shared memory location."""
     global _shared_mem_view
     if not _single_instance_check_enabled or not _shared_mem_view:
         return
@@ -143,7 +143,7 @@ def write_command_to_shared_memory(command: int):
         print(f"Error writing command to shared memory: {e}", file=sys.stderr)
 
 def write_payload_to_shared_memory(payload: Dict[str, Any]):
-    """将JSON载荷写入共享内存的指定位置。"""
+    """Writes the JSON payload to the specified shared memory location."""
     global _shared_mem_view
     if not _single_instance_check_enabled or not _shared_mem_view:
         return
@@ -160,7 +160,7 @@ def write_payload_to_shared_memory(payload: Dict[str, Any]):
         print(f"Error writing payload to shared memory: {e}", file=sys.stderr)
 
 def read_command_from_shared_memory() -> Optional[int]:
-    """从共享内存的指定位置读取命令字节。"""
+    """Reads the command byte from the specified shared memory location."""
     global _shared_mem_view
     if not _single_instance_check_enabled or not _shared_mem_view:
         return None
@@ -173,7 +173,7 @@ def read_command_from_shared_memory() -> Optional[int]:
         return None
 
 def read_payload_from_shared_memory() -> Dict[str, Any]:
-    """从共享内存读取JSON载荷。"""
+    """Reads the JSON payload from shared memory."""
     global _shared_mem_view
     if not _single_instance_check_enabled or not _shared_mem_view:
         return {}
@@ -189,7 +189,7 @@ def read_payload_from_shared_memory() -> Dict[str, Any]:
         return {}
 
 def clear_payload_in_shared_memory():
-    """清空共享内存中的载荷区域。"""
+    """Clears the payload region in shared memory."""
     global _shared_mem_view
     if not _single_instance_check_enabled or not _shared_mem_view:
         return
@@ -199,7 +199,7 @@ def clear_payload_in_shared_memory():
         print(f"Error clearing shared memory payload: {e}", file=sys.stderr)
 
 def close_shared_memory():
-    """取消映射并关闭共享内存句柄。"""
+    """Unmaps and closes the shared memory handle."""
     global _shared_mem_view, _shared_mem_handle
     if _shared_mem_view:
         UnmapViewOfFile(_shared_mem_view)
@@ -208,7 +208,7 @@ def close_shared_memory():
         CloseHandle(_shared_mem_handle)
         _shared_mem_handle = None
 
-# --- 单实例检查 ---
+# --- Single-instance check ---
 
 def check_single_instance(
     is_task_launch: bool = False,
@@ -216,46 +216,46 @@ def check_single_instance(
     payload: Optional[Dict[str, Any]] = None
 ) -> bool:
     """
-    使用系统范围的互斥锁检查另一个实例。
-    如果另一个实例存在，此函数会向其发送命令并返回False。
-    否则，它会获取互斥锁并返回True。
+    Checks for another instance using a system-wide mutex.
+    If another instance exists, this function sends it a command and returns False.
+    Otherwise, it acquires the mutex and returns True.
     """
     global _mutex_handle, _single_instance_check_enabled
     if not _single_instance_check_enabled:
-        return True # 在非Windows或API不可用时，总是允许运行
+        return True # Always allow running when not on Windows or the API is unavailable
 
     _mutex_handle = CreateMutexW(None, True, MUTEX_NAME)
     last_error = GetLastError()
 
     if last_error == ERROR_ALREADY_EXISTS:
-        # 已有实例在运行
+        # Another instance is already running
         if _mutex_handle:
-            CloseHandle(_mutex_handle) # 释放我们尝试创建但失败的句柄
+            CloseHandle(_mutex_handle) # Release the handle we tried to create but failed to own
         
-        # 根据启动类型决定发送哪个命令
+        # Decide which command to send based on the launch type
         command_to_send = command_override if command_override is not None else (
             COMMAND_RELOAD_ONLY if is_task_launch else COMMAND_RELOAD_AND_SHOW
         )
         _send_command_and_exit(command_to_send, payload=payload)
-        return False # 告知主程序退出
+        return False # Tell the main program to exit
 
     if not _mutex_handle:
-        # 这是一个严重错误，无法创建互斥锁
+        # Fatal error: the mutex could not be created
         ctypes.windll.user32.MessageBoxW(0, "Cannot create mutex. The application may not run correctly.", "Fatal Error", 0x10)
-        return True # 允许运行，但功能可能受限
+        return True # Allow running, but functionality may be limited
 
-    # 这是第一个实例
+    # This is the first instance
     _create_or_open_shared_memory()
     return True
 
 def _send_command_and_exit(command: int, payload: Optional[Dict[str, Any]] = None):
     """
-    连接到现有实例的共享内存，发送命令，（如果需要）激活窗口，然后退出。
+    Connects to the existing instance's shared memory, sends the command, activates the window (if needed), and exits.
     """
     if _create_or_open_shared_memory():
         hwnd = read_hwnd_from_shared_memory()
         if hwnd and IsWindow(hwnd):
-            # 仅当命令要求时才激活窗口
+            # Only activate the window when the command asks for it
             if command == COMMAND_RELOAD_AND_SHOW:
                 _bring_window_to_front(hwnd)
         
@@ -263,24 +263,24 @@ def _send_command_and_exit(command: int, payload: Optional[Dict[str, Any]] = Non
         write_command_to_shared_memory(command)
         close_shared_memory()
     else:
-        # 如果连共享内存都无法打开，显示一个回退消息框
+        # If even the shared memory cannot be opened, show a fallback message box
         ctypes.windll.user32.MessageBoxW(0,
             tr("single_instance_error_msg", app_name=APP_NAME),
             tr("single_instance_error_title"), 0x40)
 
 def _bring_window_to_front(hwnd: int):
-    """使用可靠的方法将指定的窗口带到前台。"""
+    """Brings the specified window to the front using a reliable method."""
     try:
-        # 步骤 1: 恢复窗口（处理最小化或隐藏的情况）
+        # Step 1: Restore the window (handles minimized or hidden states)
         ShowWindow(hwnd, SW_RESTORE)
         
-        # 步骤 2: 将窗口设为前景，这比简单的 show() 更强大
+        # Step 2: Set the window as foreground; stronger than a plain show()
         SetForegroundWindow(hwnd)
     except Exception as e:
         print(f"Error bringing window to front: {e}", file=sys.stderr)
 
 def release_mutex():
-    """在应用退出时释放互斥锁和共享内存句柄。"""
+    """Releases the mutex and shared memory handle on app exit."""
     global _mutex_handle
     close_shared_memory()
     if _mutex_handle:
