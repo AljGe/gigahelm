@@ -66,10 +66,12 @@ CI runs the unit tests and build on every push; tagged `v*` releases publish a z
 ## Development
 
 ```
-python -m unittest discover -s tests    # 44 tests, no EC access needed (worker + decision logic are stubbed)
+python -m unittest discover -s tests    # 60 tests, no EC access needed (worker + decision logic are stubbed)
 ```
 
-The EC-facing layer (`core/wmi_interface.py`) is isolated behind a request queue; everything above it (`app_services`, `auto_temp_controller`, `fan_ramp`, `fan_duty`, `bios_watchdog`) is testable without hardware. Add model presets in `config/models.py` — and only after verifying the raw range with `--diagnose` on real hardware.
+The EC-facing layer (`core/wmi_interface.py`) is isolated behind a request queue; everything above it (`app_services`, `auto_temp_controller`, `control_smoothing`, `fan_ramp`, `fan_duty`, `bios_watchdog`) is testable without hardware. Add model presets in `config/models.py` — and only after verifying the raw range with `--diagnose` on real hardware.
+
+Not-yet-built control optimizations (NVML power feed-forward, closed-loop temperature regulation, and more) live in [ROADMAP.md](ROADMAP.md).
 
 ## License
 
