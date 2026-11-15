@@ -32,6 +32,12 @@ class SettingsManager(QObject):
             self.state.set_language(lang_code)
             self.profile_manager.save_config()
 
+    def set_theme_mode(self, mode: str):
+        """Set the appearance theme mode and save the config."""
+        if self.state.get_theme_mode() != mode:
+            self.state.set_theme_mode(mode)
+            self.profile_manager.save_config()
+
     def set_start_on_boot(self, enabled: bool):
         """Enable or disable the start-on-boot task."""
         if os.name != 'nt': return

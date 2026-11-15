@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Main application window (QMainWindow), the central UI controller.
-Connects user actions to services and dispatches state updates to view components.
-This class now notifies AppServices of UI visibility for smart polling.
+主应用窗口(QMainWindow)，作为UI的中心控制器，
+连接用户操作与服务，并将状态更新分派给视图组件。
+此类现在负责通知AppServices UI的可见性，以实现智能轮询。
 """
 import sys
 import time
@@ -11,12 +11,10 @@ import ctypes
 from typing import Optional, Any, Dict
 
 from .qt import *
-from .lightweight_curve_canvas import LightweightCurveCanvas as CurveCanvas
-from .StatusInfoPanel import StatusInfoPanel
-from .CurveControlPanel import CurveControlPanel
-from .FanControlPanel import FanControlPanel
-from .BatteryControlPanel import BatteryControlPanel
+from .dashboard import Dashboard
 from .custom_title_bar import CustomTitleBar
+from .app_icon import load_app_icon
+from .theme import ThemeManager
 from core.state import AppState, ProfileState
 from tools.localization import tr, set_language
 from core.app_services import AppServices
@@ -24,7 +22,7 @@ from core.profile_manager import ProfileManager
 from core.settings_manager import SettingsManager
 from config.settings import (
     COMMAND_CLI_ACTION, COMMAND_QUIT, COMMAND_RELOAD_AND_SHOW, COMMAND_RELOAD_ONLY,
-    CHARGE_POLICY_BIOS, CHARGE_POLICY_CUSTOM
+    CHARGE_POLICY_BIOS, CHARGE_POLICY_CUSTOM, THEME_MODE_SYSTEM
 )
 
 class _WindowsResumeFilter(QAbstractNativeEventFilter):
@@ -51,7 +49,7 @@ class _WindowsResumeFilter(QAbstractNativeEventFilter):
         return False, 0
 
 class MainWindow(QMainWindow):
-    """Main application window."""
+    """主应用窗口。"""
     gui_tick = Signal()
     window_initialized_signal = Signal(int)
 
@@ -61,6 +59,7 @@ class MainWindow(QMainWindow):
         state: AppState,
         profile_manager: ProfileManager,
         settings_manager: SettingsManager,
+        theme: ThemeManager,
         start_minimized: bool = False,
         startup_cli_payload: Optional[Dict[str, Any]] = None
     ):
@@ -69,6 +68,7 @@ class MainWindow(QMainWindow):
         self.state = state
         self.profile_manager = profile_manager
         self.settings_manager = settings_manager
+        self.theme = theme
         self.start_minimized = start_minimized
         self.startup_cli_payload = startup_cli_payload or {}
         
@@ -87,13 +87,13 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.connect_signals()
         self.init_tray_icon()
-        self.apply_styles()
-        self.resize(1150, 700)
+        self._on_theme_changed()
+        self.resize(1180, 760)
         self._restore_geometry()
 
         if self.start_minimized:
             if self.tray_icon: self.tray_icon.show()
-            # Set the initial UI visibility correctly even when starting minimized
+            # 即使最小化启动，也要正确设置初始UI可见性
             self.app_services.set_ui_visibility(False)
         else:
             self.show()
@@ -107,7 +107,7 @@ class MainWindow(QMainWindow):
         if geometry_str:
             try:
                 self.restoreGeometry(QByteArray.fromHex(geometry_str.encode('ascii')))
-            except (ValueError, TypeError): self.resize(1150, 700)
+            except (ValueError, TypeError): self.resize(1180, 760)
 
     def _apply_locale(self):
         QLocale.setDefault(QLocale(self.state.get_language()))
@@ -115,37 +115,23 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         self.setWindowTitle(tr("window_title"))
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setMinimumSize(1080, 680)
         main_container = QWidget()
         main_container.setObjectName("mainContainer")
         self.setCentralWidget(main_container)
         overall_layout = QVBoxLayout(main_container)
         overall_layout.setContentsMargins(0, 0, 0, 0); overall_layout.setSpacing(0)
-        self.title_bar = CustomTitleBar(self.settings_manager, self)
+        self.title_bar = CustomTitleBar(self.state, self.settings_manager, self.theme, self)
         overall_layout.addWidget(self.title_bar)
         content_widget = QWidget()
         content_widget.setObjectName("contentWidget")
-        main_layout = QVBoxLayout(content_widget)
-        main_layout.setContentsMargins(15, 15, 15, 15); main_layout.setSpacing(15)
-        overall_layout.addWidget(content_widget)
-        self.status_info_panel = StatusInfoPanel(self.state, self)
-        main_layout.addWidget(self.status_info_panel)
-        curve_area_frame = QFrame()
-        curve_area_frame.setObjectName("curveFrame")
-        curve_area_layout = QVBoxLayout(curve_area_frame)
-        curve_area_layout.setContentsMargins(15, 15, 15, 15); curve_area_layout.setSpacing(5)
-        self.curve_control_panel = CurveControlPanel(self.profile_manager, self.settings_manager, self.state, self)
-        self.curve_canvas = CurveCanvas(self.state, self.profile_manager, self)
-        curve_area_layout.addWidget(self.curve_control_panel)
-        curve_area_layout.addWidget(self.curve_canvas)
-        main_layout.addWidget(curve_area_frame, 1)
-        bottom_controls_frame = QFrame()
-        bottom_controls_frame.setObjectName("controlFrame")
-        bottom_controls_layout = QVBoxLayout(bottom_controls_frame)
-        self.fan_control_panel = FanControlPanel(self.state, self.profile_manager, self)
-        self.battery_control_panel = BatteryControlPanel(self.state, self.profile_manager, self)
-        bottom_controls_layout.addWidget(self.fan_control_panel)
-        bottom_controls_layout.addWidget(self.battery_control_panel)
-        main_layout.addWidget(bottom_controls_frame)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
+        self.dashboard = Dashboard(
+            self.state, self.profile_manager, self.settings_manager, self.theme, self
+        )
+        content_layout.addWidget(self.dashboard)
+        overall_layout.addWidget(content_widget, 1)
 
     def connect_signals(self):
         self.title_bar.minimize_button.clicked.connect(self.showMinimized)
@@ -158,19 +144,18 @@ class MainWindow(QMainWindow):
         self.state.controller_status_message_changed.connect(self._on_controller_status_changed)
         self.state.active_profile_changed.connect(self._on_active_profile_changed)
         self.state.language_changed.connect(self._on_language_changed_by_state)
+        QApplication.instance().paletteChanged.connect(self._on_application_palette_changed)
 
-        self.curve_canvas.point_dragged.connect(self.on_curve_point_dragged)
-        self.curve_control_panel.transient_status_signal.connect(self.set_transient_status)
-        self.curve_canvas.transient_status_signal.connect(self.set_transient_status)
+        self.theme.changed.connect(self._on_theme_changed)
+        self.dashboard.transient_status.connect(self.set_transient_status)
         self.status_clear_timer.timeout.connect(self._clear_transient_status)
 
     def init_tray_icon(self):
         if not QSystemTrayIcon.isSystemTrayAvailable(): return
         self.tray_icon = QSystemTrayIcon(self)
-        icon = QIcon(self.state.paths.app_icon)
+        icon = load_app_icon(self.state.paths.app_icon)
         self.setWindowIcon(icon)
         self.tray_icon.setIcon(icon)
-        self.title_bar.icon_label.setPixmap(icon.pixmap(QSize(24, 24)))
         self.tray_icon.setToolTip(tr("window_title"))
         tray_menu = QMenu(self)
         show_hide_action = QAction(tr("tray_menu_show_hide"), self)
@@ -183,11 +168,11 @@ class MainWindow(QMainWindow):
         if not self.start_minimized:
             self.tray_icon.show()
 
-    def apply_styles(self):
-        style_path = self.state.paths.style_qss
-        if os.path.exists(style_path):
-            with open(style_path, "r", encoding="utf-8") as f:
-                self.setStyleSheet(f.read())
+    def _on_theme_changed(self):
+        """A palette switch: restyle the window, then refresh palette-driven widgets."""
+        self.setStyleSheet(self.theme.stylesheet())
+        self.title_bar.apply_theme()
+        self.dashboard.apply_theme()
 
     @Slot(ProfileState)
     def _on_active_profile_changed(self, profile: ProfileState):
@@ -198,23 +183,32 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _update_status_bar(self, message: str):
-        if not self._is_showing_transient_status:
-            self.title_bar.status_label.setText(tr(message) if message else "")
+        if self._is_showing_transient_status:
+            return
+        text = tr(message) if message else ""
+        if text == tr("wmi_error"):
+            level = "error"
+        elif text == tr("paused"):
+            level = "warn"
+        else:
+            level = "info"
+        self._set_status_text(text, level)
 
-    @Slot(str, int)
-    def set_transient_status(self, message: str, duration_ms: int = 2000):
+    def _set_status_text(self, text: str, level: str) -> None:
+        self.title_bar.status_label.setText(text)
+        if self.title_bar.status_label.property("level") != level:
+            self.title_bar.status_label.setProperty("level", level)
+            repolish(self.title_bar.status_label)
+
+    def set_transient_status(self, message: str, duration_ms: int = 2000, level: str = "info"):
         self.status_clear_timer.stop()
-        self.title_bar.status_label.setText(message)
+        self._set_status_text(message, level)
         self._is_showing_transient_status = True
         self.status_clear_timer.start(duration_ms)
 
     def _clear_transient_status(self):
         self._is_showing_transient_status = False
         self._update_status_bar(self.state.get_controller_status_message())
-
-    @Slot(str, int, float, float)
-    def on_curve_point_dragged(self, curve_type: str, index: int, new_temp: float, new_speed: float):
-        self.set_transient_status(tr("curve_point_tooltip", temp=int(new_temp), speed=int(new_speed)))
 
     @Slot(str)
     def _on_language_changed_by_state(self, lang_code: str):
@@ -224,11 +218,7 @@ class MainWindow(QMainWindow):
     def retranslate_ui(self):
         self.setWindowTitle(tr("window_title"))
         self.title_bar.retranslate_ui()
-        self.status_info_panel.retranslate_ui()
-        self.curve_control_panel.retranslate_ui()
-        self.fan_control_panel.retranslate_ui()
-        self.battery_control_panel.retranslate_ui()
-        self.curve_canvas.retranslate_ui()
+        self.dashboard.retranslate_ui()
         if self.tray_icon and self.tray_icon.contextMenu():
             actions = self.tray_icon.contextMenu().actions()
             actions[0].setText(tr("tray_menu_show_hide"))
@@ -345,14 +335,14 @@ class MainWindow(QMainWindow):
             self._is_initialized = True
             QTimer.singleShot(0, lambda: self.window_initialized_signal.emit(int(self.winId())))
         
-        # Call the AppServices method to handle UI visibility changes
+        # 调用AppServices中的方法来处理UI可见性变化
         self.app_services.set_ui_visibility(True)
         self._start_gui_timer()
         super().showEvent(event)
 
     def hideEvent(self, event: QHideEvent):
         self.gui_update_timer.stop()
-        # Call the AppServices method to handle UI visibility changes
+        # 调用AppServices中的方法来处理UI可见性变化
         self.app_services.set_ui_visibility(False)
         super().hideEvent(event)
 
@@ -362,7 +352,15 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event: QEvent):
         if event.type() == QEvent.Type.WindowStateChange:
             self.title_bar.update_window_state(self.isMaximized())
+        elif event.type() == QEvent.Type.ThemeChange:
+            if self.theme.mode() == THEME_MODE_SYSTEM:
+                self.theme.refresh()
         super().changeEvent(event)
+
+    def _on_application_palette_changed(self):
+        """Backup signal for system theme changes on builds that skip ThemeChange."""
+        if self.theme.mode() == THEME_MODE_SYSTEM:
+            self.theme.refresh()
 
     if sys.platform == 'win32':
         def nativeEvent(self, event_type: Any, message: int) -> tuple[bool, int]:
@@ -374,7 +372,7 @@ class MainWindow(QMainWindow):
 
             if msg.message == 0x00A3: # WM_NCLBUTTONDBLCLK
                 pos = QPoint(msg.lParam & 0xFFFF, (msg.lParam >> 16) & 0xFFFF)
-                # Check whether the double-click is on a non-button area of the title bar
+                # 检查双击是否在标题栏的非按钮区域
                 if self.title_bar.geometry().contains(self.mapFromGlobal(pos)):
                     child = self.title_bar.childAt(self.title_bar.mapFromGlobal(pos))
                     if not isinstance(child, (QPushButton, QComboBox)):
@@ -382,12 +380,12 @@ class MainWindow(QMainWindow):
                         return True, 0
 
             if msg.message == 0x0084: # WM_NCHITTEST
-                # Fix: use Qt's QCursor.pos() to handle high-DPI scaling automatically
-                # Do not use msg.lParam: on scaled displays it returns physical pixels, misclassifying bottom controls as window edges
+                # 修复：使用 Qt 的 QCursor.pos() 自动处理高 DPI 缩放
+                # 不要用 msg.lParam，它在开启缩放的屏幕上返回物理像素，会导致底部控件被误判为窗口边缘
                 global_pos = QCursor.pos()
                 pos = self.mapFromGlobal(global_pos)
                 
-                # Check resize borders only when windowed
+                # 仅在窗口化状态下检查边框用于缩放
                 if not self.isMaximized():
                     border = 8
                     on_left = pos.x() < border
@@ -404,12 +402,12 @@ class MainWindow(QMainWindow):
                     if on_top: return True, 12
                     if on_bottom: return True, 15
                 
-                # Check the title bar area
+                # 检查标题栏区域
                 if self.title_bar and pos.y() < self.title_bar.height():
                     local_pos = self.title_bar.mapFromGlobal(global_pos)
                     child = self.title_bar.childAt(local_pos)
                     
-                    # Recursive check so complex controls like dropdowns are not mistaken for the drag area
+                    # 递归检查，确保下拉框等复杂控件不会被误判为拖拽区
                     is_interactive = False
                     current_child = child
                     while current_child:
@@ -421,7 +419,7 @@ class MainWindow(QMainWindow):
                     if is_interactive:
                         result = super().nativeEvent(event_type, message)
                         return (bool(result[0]), int(result[1])) if isinstance(result, (tuple, list)) and len(result) == 2 else (False, 0)
-                    return True, 2 # HTCAPTION (returning 2 lets Windows take over title bar dragging)
+                    return True, 2 # HTCAPTION (返回 2 让 Windows 接管标题栏拖拽)
             
             result = super().nativeEvent(event_type, message)
             return (bool(result[0]), int(result[1])) if isinstance(result, (tuple, list)) and len(result) == 2 else (False, 0)

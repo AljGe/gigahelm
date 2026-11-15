@@ -1,22 +1,21 @@
-# Requires elevation. Hands fans back to BIOS, replaces C:\Tools\GFBC, re-registers the startup task.
+# Requires elevation. Hands fans back to BIOS, replaces C:\Tools\Gigahelm,
+# migrates the old install's config/state and re-registers the startup task.
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $false
-$taskName = "FanBatteryControl Startup Task"
-$install = "C:\Tools\GFBC"
-$sourceRoot = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $sourceRoot "dist\main"
+$taskName = "Gigahelm Startup Task"
+$legacyTaskName = "FanBatteryControl Startup Task"
+$install = "C:\Tools\Gigahelm"
+$legacyInstall = "C:\Tools\GFBC"
+$sourceRoot = "C:\Users\REDACTED\AppData\Local\Temp\gfb-center"
+$dist = Join-Path $sourceRoot "dist\Gigahelm"
+$exeName = "Gigahelm.exe"
 $python = Join-Path $sourceRoot ".venv\Scripts\python.exe"
-$log = Join-Path $env:TEMP "gfb-deploy.log"
+$log = Join-Path $env:TEMP "gigahelm-deploy.log"
 
 function Write-Log([string]$Message) {
     $line = "$(Get-Date -Format o) $Message"
     Add-Content -Path $log -Value $line -Encoding utf8
     Write-Host $line
-}
-
-function Escape-XmlText([string]$Value) {
-    if ($null -eq $Value) { return "" }
-    return ($Value -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')
 }
 
 Set-Content -Path $log -Value "deploy-start" -Encoding utf8
@@ -27,8 +26,12 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit 2
 }
 
-if (-not (Test-Path (Join-Path $dist "main.exe"))) {
+if (-not (Test-Path (Join-Path $dist $exeName))) {
     Write-Log "build-missing"
+    exit 3
+}
+if (-not (Test-Path (Join-Path $dist "app_icon.ico"))) {
+    Write-Log "build-icon-missing"
     exit 3
 }
 if (-not (Test-Path $python)) {
@@ -49,33 +52,57 @@ if ($LASTEXITCODE -ne 0) { Write-Log "handback-failed"; exit 4 }
 
 $userId = ""
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if (-not $existing) {
+    $existing = Get-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
+}
 if ($existing) {
     $userId = [string]$existing.Principal.UserId
     Write-Log "task-user=$userId"
-    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Stop-ScheduledTask -TaskName $existing.TaskName -ErrorAction SilentlyContinue
 } else {
     Write-Log "task-missing"
 }
 
-$needle = "C:\Tools\GFBC\main.exe"
-$procs = @(Get-CimInstance Win32_Process -Filter "Name = 'main.exe'" -ErrorAction SilentlyContinue)
+$ourPaths = @($install, $legacyInstall, $sourceRoot)
+$procs = @(Get-CimInstance Win32_Process -Filter "Name = 'Gigahelm.exe' OR Name = 'main.exe'" -ErrorAction SilentlyContinue)
 foreach ($proc in $procs) {
     $path = [string]$proc.ExecutablePath
     $cmd = [string]$proc.CommandLine
-    $ours = (($path -like "*$needle*") -or ($cmd -like "*$needle*"))
+    $ours = $false
+    foreach ($ourPath in $ourPaths) {
+        if (($path -like "*$ourPath*") -or ($cmd -like "*$ourPath*")) { $ours = $true }
+    }
     if ($ours) {
         Write-Log "kill-pid=$($proc.ProcessId)"
         Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
         continue
     }
     if (-not $path) {
-        Write-Log "unproven-main-exe pid=$($proc.ProcessId)"
-        exit 5
+        # Stale or protected entry: no readable path, so nothing to prove and nothing to kill.
+        Write-Log "unproven-process pid=$($proc.ProcessId) (skipped)"
+        continue
     }
+    Write-Log "foreign-process pid=$($proc.ProcessId) path=$path"
+    exit 5
 }
 Start-Sleep -Seconds 1
 
+New-Item -ItemType Directory -Force -Path $install | Out-Null
+
+# Keep the user's profiles and crash-recovery state when moving from C:\Tools\GFBC.
 $configPath = Join-Path $install "control_config.json"
+$legacyConfigPath = Join-Path $legacyInstall "control_config.json"
+if ((Test-Path $legacyConfigPath) -and -not (Test-Path $configPath)) {
+    Copy-Item $legacyConfigPath $configPath -Force
+    Write-Log "config-migrated"
+}
+$statePath = Join-Path $install "last_mode.state"
+$legacyStatePath = Join-Path $legacyInstall "last_mode.state"
+if ((Test-Path $legacyStatePath) -and -not (Test-Path $statePath)) {
+    Copy-Item $legacyStatePath $statePath -Force
+    Write-Log "state-migrated"
+}
+
 $configBefore = ""
 if (Test-Path $configPath) {
     $configBefore = (Get-FileHash -Algorithm SHA256 -Path $configPath).Hash
@@ -95,79 +122,19 @@ if ($configBefore -ne "") {
     Write-Log "config-unchanged"
 }
 
-Write-Log "write-task-template"
-& $python -c "import sys; sys.path.insert(0, r'$sourceRoot'); from tools.task_scheduler import _get_default_task_xml_content; open(r'$install\task_template.xml','wb').write(_get_default_task_xml_content())"
-if ($LASTEXITCODE -ne 0) { Write-Log "template-write-failed"; exit 8 }
-
 Write-Log "acl"
 & icacls $install /inheritance:r
 if ($LASTEXITCODE -ne 0) { Write-Log "icacls-inheritance-failed"; exit 9 }
 & icacls $install /grant "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"
 if ($LASTEXITCODE -ne 0) { Write-Log "icacls-grant-failed"; exit 9 }
 
-$userXml = ""
-if ($userId) {
-    $userXml = "      <UserId>$(Escape-XmlText $userId)</UserId>`r`n"
-}
-$filled = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>Starts the FanBatteryControl application on user logon and system wake.</Description>
-    <Author>FanBatteryControl</Author>
-  </RegistrationInfo>
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <Delay>PT15S</Delay>
-    </LogonTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Delay>PT30S</Delay>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-    </EventTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-$userXml      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>false</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <RestartOnFailure>
-      <Count>3</Count>
-      <Interval>PT1M</Interval>
-    </RestartOnFailure>
-    <Priority>7</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>C:\Tools\GFBC\main.exe</Command>
-      <Arguments>--minimized</Arguments>
-      <WorkingDirectory>C:\Tools\GFBC</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>
-"@
-$filledPath = Join-Path $env:TEMP "gfb-startup-task.xml"
-$utf16 = New-Object System.Text.UnicodeEncoding $false, $true
-[System.IO.File]::WriteAllText($filledPath, $filled, $utf16)
+Write-Log "write-task-xml"
+$filledPath = Join-Path $env:TEMP "gigahelm-startup-task.xml"
+& $python -c "import sys; sys.path.insert(0, r'$sourceRoot'); from tools.task_scheduler import build_startup_task_xml; open(r'$filledPath','wb').write(build_startup_task_xml(command=r'$install\$exeName', arguments='--minimized', working_directory=r'$install', user_id=r'$userId'))"
+if ($LASTEXITCODE -ne 0) { Write-Log "task-xml-failed"; exit 8 }
+
+Write-Log "delete-legacy-task"
+& schtasks /Delete /TN "$legacyTaskName" /F | Out-Null
 
 Write-Log "register-task"
 & schtasks /Create /TN "$taskName" /XML "$filledPath" /F
@@ -179,6 +146,7 @@ Start-Sleep -Seconds 8
 
 Write-Log "probe"
 & $python -c @"
+import os
 import sys
 sys.path.insert(0, r'$sourceRoot')
 import wmi
@@ -238,12 +206,35 @@ fixed = num('GetFixedFanStatus')
 auto = num('GetAutoFanStatus')
 step = num('GetStepFanStatus')
 speed = num('GetFixedFanSpeed')
+
+mode_path = os.path.join(r'$install', 'last_mode.state')
+try:
+    with open(mode_path, encoding='utf-8') as handle:
+        mode = handle.read().strip()
+except OSError:
+    mode = ''
+
+if mode == 'bios':
+    if auto == 1 and fixed == 0:
+        print('PASS-BIOS')
+        sys.exit(0)
+    print('FAIL-BIOS fixed=%s auto=%s step=%s' % (fixed, auto, step))
+    sys.exit(1)
+
+if mode == 'emergency':
+    raw = float(percent_to_raw(80))
+    if fixed == 1 and auto == 0 and speed == raw:
+        print('PASS-EMERGENCY')
+        sys.exit(0)
+    print('FAIL-EMERGENCY fixed=%s auto=%s speed=%s' % (fixed, auto, speed))
+    sys.exit(1)
+
 latched = fixed == 1 and auto == 0 and step == 0
 raw_ok = speed == 0 or (speed is not None and 57 <= speed <= 227)
 if speed == 229 or (speed is not None and 1 <= speed <= 56) or not latched or not raw_ok:
-    print('FAIL')
+    print('FAIL-SOFTWARE mode=%s fixed=%s auto=%s step=%s speed=%s' % (mode, fixed, auto, step, speed))
     sys.exit(1)
-print('PASS')
+print('PASS-SOFTWARE mode=%s speed=%s' % (mode, speed))
 "@
 $probe = $LASTEXITCODE
 Write-Log "probe-exit=$probe"

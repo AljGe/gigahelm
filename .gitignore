@@ -5,12 +5,14 @@ __pycache__/
 *.pyd
 
 # PyInstaller
+#  Usually these files are written by a script so they are not necessary
+#  to store in VCS
 *.spec
 build/
 dist/
 hooks/
 
-# Virtual environments
+# Virtual Environments
 venv/
 venv_std/
 .venv/
@@ -18,10 +20,10 @@ venv_std/
 # IDE / Editor specific
 .idea/
 .vscode/
+dist_nuitka/
+nuitka-crash-report.xml
+.roo/rules/rules.md
+build.bat
 
-# Runtime state (machine-local; never commit)
-control_config.json
-last_mode.state
-languages.json
-task_template.xml
-*.log
+# Bench harness outputs
+tools/bench/results/

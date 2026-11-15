@@ -33,10 +33,11 @@ class PercentToRawTests(unittest.TestCase):
         self.assertEqual(percent_to_raw(10), 57)   # spin floor
         self.assertEqual(percent_to_raw(25), 57)
 
-    def test_custom_preset_changes_range(self):
-        self.assertEqual(percent_to_raw(100, fan_raw_max=200), 200)
-        self.assertEqual(percent_to_raw(10, fan_percent_min_spin=20), 46)  # ceil(20/100*227)
-        self.assertEqual(percent_to_raw(0, fan_raw_max=200), 0)
+    def test_spin_floor_is_min_step(self):
+        # deployed API: fixed 227 ceiling / 25 % spin floor (ceil(25/100*227));
+        # the parameterized fan_raw_max/fan_percent_min_spin kwargs from the
+        # pre-merge loop were superseded
+        self.assertEqual(percent_to_raw(25), 57)
 
 
 if __name__ == "__main__":

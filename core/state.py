@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Defines the app's centralized, reactive state.
-All state classes inherit from QObject and use Qt's property system (@Property) to automatically emit signals when their values change.
-This lets UI components precisely subscribe to the data changes they care about for the most efficient updates.
+定义了应用的中心化、响应式状态。
+所有状态类都继承自QObject，并使用Qt的属性系统(@Property)来在其值改变时自动发出信号。
+这使得UI组件可以精确地订阅它们所关心的数据变化，实现最高效的更新。
 """
 import copy
 from gui.qt import QObject, Signal, Property, Slot
 from typing import List, Dict, Optional, Any, cast
-from config.settings import DEFAULT_PROFILE_SETTINGS
+from config.settings import DEFAULT_PROFILE_SETTINGS, DEFAULT_THEME_MODE, THEME_MODES
 from core.path_manager import PathManager
 
 class ProfileState(QObject):
     """
-    Reactive settings set for a single profile.
-    Each property change emits a specific signal.
+    表示单个配置文件的响应式设置集。
+    每个属性的更改都会发出一个特定的信号。
     """
     fan_mode_changed = Signal(str)
     custom_fan_speed_changed = Signal(int)
@@ -40,8 +40,11 @@ class ProfileState(QObject):
 
     def from_dict(self, data: Dict[str, Any]):
         final_data = copy.deepcopy(DEFAULT_PROFILE_SETTINGS)
-        final_data.update(data)
-        
+        # 只接受仍存在的键：旧配置里的颜色键在保存时被自然丢弃
+        for key in DEFAULT_PROFILE_SETTINGS:
+            if key in data:
+                final_data[key] = data[key]
+
         for key in ['cpu_fan_table', 'gpu_fan_table']:
             if key in final_data and final_data[key]:
                 final_data[key] = [list(point) for point in final_data[key]]
@@ -91,10 +94,11 @@ class ProfileState(QObject):
 
 class AppState(QObject):
     """
-    Top-level reactive state object for the whole app.
-    Single source of truth for all persisted and transient data.
+    整个应用的顶层响应式状态对象。
+    这是所有持久化和瞬时数据的唯一真实来源。
     """
     language_changed = Signal(str)
+    theme_mode_changed = Signal(str)
     start_on_boot_changed = Signal(bool)
     active_profile_changed = Signal(ProfileState)
     profiles_list_changed = Signal(list, str) # names, active_name
@@ -102,7 +106,7 @@ class AppState(QObject):
     cpu_temp_changed = Signal(float)
     gpu_temp_changed = Signal(float)
     gpu_asleep_changed = Signal(bool)
-    # Renamed to match the hardware implementation, removing the conversion in the business logic layer
+    # 重命名以匹配硬件实现，消除业务逻辑层的转化
     fan1_rpm_changed = Signal(int)
     fan2_rpm_changed = Signal(int)
     ec_fixed_fan_speed_raw_changed = Signal(int)
@@ -121,17 +125,18 @@ class AppState(QObject):
         super().__init__(parent)
         self.paths = path_manager
         self._language: str = "en"
+        self._theme_mode: str = DEFAULT_THEME_MODE
         self._start_on_boot: bool = False
         self._active_profile_name: Optional[str] = None
         self._profiles: Dict[str, ProfileState] = {}
         self.profile_order: List[str] = []
         self.window_geometry: Optional[str] = None
 
-        # Transient state
+        # 瞬时状态
         self._cpu_temp: float = 0.0
         self._gpu_temp: float = 0.0
         self._gpu_asleep: bool = False
-        # Renamed
+        # 重命名
         self._fan1_rpm: int = 0
         self._fan2_rpm: int = 0
         self._ec_fixed_fan_speed_raw: int = -1
@@ -151,10 +156,15 @@ class AppState(QObject):
             setattr(self, field_name, value)
             signal.emit(value)
 
-    # --- Persisted state properties ---
+    # --- 持久化状态属性 ---
     def get_language(self) -> str: return self._language
     def set_language(self, value: str): self._set_value('_language', value, self.language_changed)
     language = Property(str, get_language, set_language, notify=language_changed) # type: ignore
+
+    def get_theme_mode(self) -> str: return self._theme_mode
+    def set_theme_mode(self, value: str):
+        self._set_value('_theme_mode', value if value in THEME_MODES else DEFAULT_THEME_MODE, self.theme_mode_changed)
+    theme_mode = Property(str, get_theme_mode, set_theme_mode, notify=theme_mode_changed) # type: ignore
 
     def get_start_on_boot(self) -> bool: return self._start_on_boot
     def set_start_on_boot(self, value: bool): self._set_value('_start_on_boot', value, self.start_on_boot_changed)
@@ -176,7 +186,7 @@ class AppState(QObject):
     def get_profile_names(self) -> List[str]: return self.profile_order
     profile_names = Property(list, get_profile_names, notify=profiles_list_changed) # type: ignore
         
-    # --- Transient state properties ---
+    # --- 瞬时状态属性 ---
     def get_cpu_temp(self) -> float: return self._cpu_temp
     def set_cpu_temp(self, value: float): self._set_value('_cpu_temp', value, self.cpu_temp_changed)
     cpu_temp = Property(float, get_cpu_temp, set_cpu_temp, notify=cpu_temp_changed) # type: ignore
@@ -189,7 +199,7 @@ class AppState(QObject):
     def set_gpu_asleep(self, value: bool): self._set_value('_gpu_asleep', value, self.gpu_asleep_changed)
     gpu_asleep = Property(bool, get_gpu_asleep, set_gpu_asleep, notify=gpu_asleep_changed) # type: ignore
 
-    # Renamed
+    # 重命名
     def get_fan1_rpm(self) -> int: return self._fan1_rpm
     def set_fan1_rpm(self, value: int): self._set_value('_fan1_rpm', value, self.fan1_rpm_changed)
     fan1_rpm = Property(int, get_fan1_rpm, set_fan1_rpm, notify=fan1_rpm_changed) # type: ignore
@@ -242,7 +252,7 @@ class AppState(QObject):
     def set_controller_status_message(self, value: str): self._set_value('_controller_status_message', value, self.controller_status_message_changed)
     controller_status_message = Property(str, get_controller_status_message, set_controller_status_message, notify=controller_status_message_changed) # type: ignore
     
-    # --- Profile management methods ---
+    # --- 配置文件管理方法 ---
     def get_profile(self, name: str) -> Optional[ProfileState]:
         return self._profiles.get(name)
         
