@@ -6,13 +6,16 @@ This class encapsulates loading, saving, creating, renaming, and activating prof
 import os
 import json
 import copy
+import shutil
 import sys
 import tempfile
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 
 from gui.qt import QObject, Signal
 from .state import AppState, ProfileState
-from config.settings import DEFAULT_PROFILE_SETTINGS
+from config.settings import DEFAULT_PROFILE_SETTINGS, DEFAULT_THEME_MODE
+from tools.localization import tr
 
 class ProfileManager(QObject):
     """Central class that manages the application's profiles."""
@@ -27,6 +30,7 @@ class ProfileManager(QObject):
         config_data = self._read_config_file()
         
         self.state.set_language(config_data.get("language", "en"))
+        self.state.set_theme_mode(config_data.get("theme_mode", DEFAULT_THEME_MODE))
         self.state.set_start_on_boot(config_data.get("start_on_boot", False))
         self.state.window_geometry = config_data.get("window_geometry")
 
@@ -53,6 +57,7 @@ class ProfileManager(QObject):
         """Save the current state to the JSON config file. Atomic write: write to a temp file, then replace, so a mid-write crash cannot corrupt the config."""
         config_data = {
             "language": self.state.get_language(),
+            "theme_mode": self.state.get_theme_mode(),
             "start_on_boot": self.state.get_start_on_boot(),
             "active_profile_name": self.state.get_active_profile_name(),
             "window_geometry": self.state.window_geometry,
@@ -61,9 +66,17 @@ class ProfileManager(QObject):
         }
         temp_path = ""
         try:
+            if os.path.exists(self.config_path):
+                try:
+                    shutil.copy2(self.config_path, self.config_path + ".bak")
+                except OSError as backup_error:
+                    print(f"Warning: could not back up config: {backup_error}", file=sys.stderr)
+
             fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(self.config_path) or ".", prefix="control_config_", suffix=".tmp")
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(temp_path, self.config_path)
             temp_path = ""
         except Exception as e:
@@ -71,12 +84,30 @@ class ProfileManager(QObject):
                 try: os.remove(temp_path)
                 except OSError: pass
             print(f"Error: could not save profiles to '{self.config_path}'. Error: {e}", file=sys.stderr)
+            self.state.set_controller_status_message(tr("config_save_error", error=str(e)))
 
     def _read_config_file(self) -> Dict[str, Any]:
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError as error:
+            backup_path = f"{self.config_path}.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            try:
+                shutil.copy2(self.config_path, backup_path)
+            except OSError:
+                backup_path = self.config_path
+            print(
+                f"Error: config '{self.config_path}' is corrupt ({error}); keeping a copy at '{backup_path}'.",
+                file=sys.stderr,
+            )
+            self.state.set_controller_status_message(
+                tr("config_corrupt_recovered", path=backup_path)
+            )
+            return {}
+        except OSError as error:
+            print(f"Error: could not read config '{self.config_path}': {error}", file=sys.stderr)
             return {}
 
     def get_active_profile(self) -> Optional[ProfileState]:

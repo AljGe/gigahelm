@@ -1,174 +1,234 @@
-# gui/base_control_panel.py (replaces the entire file)
 # -*- coding: utf-8 -*-
 """
-Provides a reusable base UI panel (BaseControlPanel) for uniformly creating and managing control areas with mode selection and a slider.
-The base class is now driven entirely by AppState (the real hardware state) for its display, keeping the UI in sync with the hardware.
+BaseControlPanel: the shared vertical card behind fan and battery control.
+
+The card shows, from top to bottom, a title, a one-line description, a
+segmented mode switch, the value the hardware is *currently* using, and the
+custom-speed slider. User intent flows to `ProfileManager`; display state is
+driven exclusively by `AppState` so the UI can never disagree with the EC.
 """
-from .qt import *
+
+from typing import Any, Dict, Optional
+
+from .qt import (
+    QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QTimer, Qt, Slot,
+    QSizePolicy,
+)
 from .tooltip_manager import tooltip_manager
-from tools.localization import tr
-from core.state import AppState, ProfileState
-from core.profile_manager import ProfileManager
+from .segmented_control import SegmentedControl
 from .EditableLabel import EditableLabel
-from typing import Dict, Any, List, Tuple, Optional, Union
+from tools.localization import tr
+from core.state import AppState
+from core.profile_manager import ProfileManager
+
 
 class BaseControlPanel(QFrame):
-    """
-    A configurable base QFrame containing a set of mode radio buttons and an associated slider.
-    It calls ProfileManager to set the desired state, but reactively updates
-    itself via AppState signals to reflect the real hardware state.
-    """
-    
-    def __init__(self, config: Dict[str, Any], state: AppState, profile_manager: ProfileManager, parent: Optional[QWidget] = None):
+    """Vertical control card; subclasses supply the config dict and live text."""
+
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        state: AppState,
+        profile_manager: ProfileManager,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.config = config
         self.state = state
         self.profile_manager = profile_manager
-        
-        self.mode_button_group: QButtonGroup
-        self.mode_radios: Dict[str, QRadioButton] = {}
-        self.slider: QSlider
-        self.value_label: EditableLabel
-        self.mode_label: QLabel
-        self.slider_label: QLabel
-        
+        self._mode: str = ""
+
+        self.setObjectName("card")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
         self.slider_debounce_timer = QTimer(self)
         self.slider_debounce_timer.setSingleShot(True)
-        self.slider_debounce_timer.setInterval(300) # 300ms delay
-        
+        self.slider_debounce_timer.setInterval(300)
+
         self._init_ui()
         self._connect_signals()
-        
-        # On init, read the real state from AppState and update the UI
-        self._update_all_displays_from_app_state()
+        self._refresh_from_app_state()
 
-    def _init_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5); layout.setSpacing(10)
+    # ------------------------------------------------------------------ UI ---
+    def _init_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
 
-        self.mode_label = QLabel(tr(self.config["mode_label_key"]), self)
-        layout.addWidget(self.mode_label)
+        self.card_title_label = QLabel(tr(self.config["card_title_key"]), self)
+        self.card_title_label.setObjectName("cardTitle")
+        layout.addWidget(self.card_title_label)
 
-        self.mode_button_group = QButtonGroup(self)
+        self.card_desc_label = QLabel(tr(self.config["card_desc_key"]), self)
+        self.card_desc_label.setObjectName("cardDesc")
+        self.card_desc_label.setWordWrap(True)
+        layout.addWidget(self.card_desc_label)
+
+        self.segmented = SegmentedControl(self)
         for mode_name, text_key in self.config["radio_configs"]:
-            radio = QRadioButton(tr(text_key), self)
-            self.mode_radios[mode_name] = radio
-            self.mode_button_group.addButton(radio)
-            layout.addWidget(radio)
-        
-        layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+            self.segmented.add_segment(mode_name, tr(text_key))
+        self.segmented.set_tooltip_key(self.config["mode_tooltip_key"])
+        layout.addWidget(self.segmented)
+
+        self.live_value_label = QLabel("", self)
+        self.live_value_label.setObjectName("liveValue")
+        layout.addWidget(self.live_value_label)
+
+        self.live_line_label = QLabel("", self)
+        self.live_line_label.setObjectName("liveLine")
+        self.live_line_label.setWordWrap(True)
+        layout.addWidget(self.live_line_label)
+
+        slider_row = QHBoxLayout()
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(8)
 
         self.slider_label = QLabel(tr(self.config["slider_label_key"]), self)
+        self.slider_label.setObjectName("statFooter")
+        slider_row.addWidget(self.slider_label)
+
         self.slider = QSlider(Qt.Orientation.Horizontal, self)
         self.slider.setRange(*self.config["slider_range"])
+        slider_row.addWidget(self.slider, 1)
 
-        self.value_label = EditableLabel(unit=tr('percent_unit'), parent=self)
-        self.value_label.setMinimumWidth(45)
+        self.value_label = EditableLabel(unit=tr("percent_unit"), parent=self)
+        self.value_label.setObjectName("valuePill")
+        self.value_label.label.setObjectName("valuePill")
+        self.value_label.setMinimumWidth(48)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        
-        layout.addWidget(self.slider_label)
-        layout.addWidget(self.slider, 1)
-        layout.addWidget(self.value_label)
+        slider_row.addWidget(self.value_label)
 
-        tooltip_manager.register(self.mode_label, self.config["mode_tooltip_key"])
+        layout.addLayout(slider_row)
+
         tooltip_manager.register(self.slider, self.config["slider_tooltip_key"])
         tooltip_manager.register(self.value_label, "editable_label_tooltip")
 
-    def _connect_signals(self):
+    def _connect_signals(self) -> None:
         # UI -> ProfileManager (user intent)
-        for mode_name, radio in self.mode_radios.items():
-            radio.toggled.connect(lambda checked, name=mode_name: 
-                self.profile_manager.update_active_profile_data(self.config["profile_mode_attr"], name) if checked else None)
-
+        self.segmented.valueChanged.connect(self._on_mode_selected)
         self.slider.valueChanged.connect(self._on_slider_value_changed)
         self.slider_debounce_timer.timeout.connect(self._commit_slider_value)
         self.value_label.editingFinished.connect(self._commit_label_value)
 
-        # AppState (real hardware state) -> UI (display)
-        # Dynamically connect to the AppState signal
-        mode_signal = getattr(self.state, self.config["app_state_mode_attr"] + "_changed")
-        mode_signal.connect(self._update_mode_display)
-        
-        value_signal = getattr(self.state, self.config["app_state_value_attr"] + "_changed")
-        value_signal.connect(self._update_value_display)
-        
-        # The fan panel additionally listens to the global enable/disable state
+        # AppState (hardware truth) -> UI
+        getattr(self.state, self.config["app_state_mode_attr"] + "_changed").connect(
+            self._update_mode_display
+        )
+        getattr(self.state, self.config["app_state_value_attr"] + "_changed").connect(
+            self._update_value_display
+        )
+
         if self.config.get("is_fan_control", False):
             self.state.is_fan_control_panel_enabled_changed.connect(
-                lambda: self._update_mode_display(self.state.get_applied_fan_mode())
+                self._on_fan_control_enabled_changed
             )
 
+        self._connect_live_signals()
+
+    def _connect_live_signals(self) -> None:
+        """Hook for subclasses: subscribe to the signals their live row shows."""
+
+    # ------------------------------------------------------------- intent ---
+    @Slot(str)
+    def _on_mode_selected(self, mode_name: str) -> None:
+        self.profile_manager.update_active_profile_data(self.config["profile_mode_attr"], mode_name)
+
     @Slot(int)
-    def _on_slider_value_changed(self, value: int):
+    def _on_slider_value_changed(self, value: int) -> None:
         self.value_label.blockSignals(True)
         self.value_label.setValue(value)
         self.value_label.blockSignals(False)
         self.slider_debounce_timer.start()
 
     @Slot()
-    def _commit_slider_value(self):
+    def _commit_slider_value(self) -> None:
         self.slider_debounce_timer.stop()
         self._commit_value(self.slider.value())
 
     @Slot(int)
-    def _commit_label_value(self, value: int):
+    def _commit_label_value(self, value: int) -> None:
         self.slider_debounce_timer.stop()
         min_val, max_val = self.config["slider_range"]
-        clamped_value = max(min_val, min(max_val, value))
-        self._commit_value(clamped_value)
+        self._commit_value(max(min_val, min(max_val, value)))
 
-    def _commit_value(self, final_value: int):
+    def _commit_value(self, final_value: int) -> None:
         self.profile_manager.update_active_profile_data(self.config["profile_value_attr"], final_value)
 
-    def _update_all_displays_from_app_state(self):
-        """Reads all current real values from AppState and updates the UI."""
-        # Dynamically call the AppState getter methods
+    # ------------------------------------------------------------ display ---
+    def _refresh_from_app_state(self) -> None:
+        """Push every currently known hardware value into the card."""
         mode_getter = getattr(self.state, "get_" + self.config["app_state_mode_attr"])
         value_getter = getattr(self.state, "get_" + self.config["app_state_value_attr"])
-        
-        self._update_mode_display(mode_getter())
-        self._update_value_display(value_getter())
+        self._apply_mode(mode_getter())
+        self._apply_value(value_getter())
+        self._update_live_display()
 
     @Slot(str)
-    def _update_mode_display(self, mode: str):
-        self.mode_button_group.blockSignals(True)
-        if mode in self.mode_radios:
-            self.mode_radios[mode].setChecked(True)
-        self.mode_button_group.blockSignals(False)
-        
-        is_custom_mode = (mode == self.config["custom_mode_name"])
-        
-        is_slider_enabled = False
-        if self.config.get("is_fan_control", False):
-            is_slider_enabled = self.state.get_is_fan_control_panel_enabled() and is_custom_mode
-        else:
-            is_slider_enabled = is_custom_mode
-
-        self.slider_label.setEnabled(is_slider_enabled)
-        self.slider.setEnabled(is_slider_enabled)
-        self.value_label.setEnabled(is_slider_enabled)
+    def _update_mode_display(self, mode: str) -> None:
+        self._apply_mode(mode)
+        self._update_live_display()
 
     @Slot(int)
-    def _update_value_display(self, value: int):
-        if value < 0: return # Ignore invalid values (e.g. -1)
-        
-        # Update the slider
+    def _update_value_display(self, value: int) -> None:
+        if value < 0:
+            return  # -1 means "no readback yet"; keep the last known value
+        self._apply_value(value)
+        self._update_live_display()
+
+    @Slot(bool)
+    def _on_fan_control_enabled_changed(self, enabled: bool) -> None:
+        self._apply_enablement()
+        self._update_live_display()
+
+    def _apply_mode(self, mode: str) -> None:
+        self._mode = mode
+        self.segmented.set_value(mode)
+        self._apply_enablement()
+
+    def _apply_enablement(self) -> None:
+        """The mode selector must stay usable in BIOS mode so the user can leave it."""
+        in_custom_mode = self._mode == self.config["custom_mode_name"]
+        slider_enabled = in_custom_mode
+
+        # Never disable the segmented control: BIOS is a mode, not a dead end.
+        self.segmented.setEnabled(True)
+        self.slider_label.setEnabled(slider_enabled)
+        self.slider.setEnabled(slider_enabled)
+        self.value_label.setEnabled(slider_enabled)
+
+    def _apply_value(self, value: int) -> None:
+        if value < 0:
+            return
         self.slider.blockSignals(True)
         self.slider.setValue(value)
         self.slider.blockSignals(False)
-        
-        # Update the label
         self.value_label.blockSignals(True)
         self.value_label.setValue(value)
         self.value_label.blockSignals(False)
 
-    def retranslate_ui(self):
-        self.mode_label.setText(tr(self.config["mode_label_key"]))
+    def _update_live_display(self) -> None:
+        """Refresh the big value and detail line; overridden by the two cards."""
+        if self.config.get("is_fan_control", False) and not self.state.get_is_fan_control_panel_enabled():
+            self.live_value_label.setText(tr("fan_unavailable_text"))
+            self.live_line_label.setText("")
+            return
+        value_getter = getattr(self.state, "get_" + self.config["app_state_value_attr"])
+        value = value_getter()
+        text = tr("value_not_available") if value < 0 else f"{value}{tr('percent_unit')}"
+        self.live_value_label.setText(text)
+        self.live_line_label.setText("")
+
+    @staticmethod
+    def _optional_count(value: int) -> str:
+        """Format an optional integer that uses -1 for 'unknown'."""
+        return tr("value_not_available") if value < 0 else str(value)
+
+    # ------------------------------------------------------------- i18n ----
+    def retranslate_ui(self) -> None:
+        self.card_title_label.setText(tr(self.config["card_title_key"]))
+        self.card_desc_label.setText(tr(self.config["card_desc_key"]))
         for mode_name, text_key in self.config["radio_configs"]:
-            if mode_name in self.mode_radios:
-                self.mode_radios[mode_name].setText(tr(text_key))
-        
+            self.segmented.set_segment_text(mode_name, tr(text_key))
         self.slider_label.setText(tr(self.config["slider_label_key"]))
-        self.value_label.unit = tr('percent_unit')
-        # Also refresh from AppState when retranslating
-        self._update_all_displays_from_app_state()
+        self.value_label.unit = tr("percent_unit")
+        self._refresh_from_app_state()

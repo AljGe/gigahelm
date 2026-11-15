@@ -21,16 +21,10 @@ class PathManager:
 
         # --- Core config files ---
         self.control_config = os.path.join(self.base_dir, 'control_config.json')
-        self.languages = os.path.join(self.base_dir, 'languages.json')
 
-        # --- GUI files ---
-        self.style_qss = os.path.join(self.base_dir, 'gui', 'style.qss')
-        
         # --- Icon ---
         self.app_icon = os.path.join(self.base_dir, 'app_icon.ico')
 
-        # --- Task Scheduler template ---
-        self.task_template = os.path.join(self.base_dir, 'task_template.xml')
 
     def is_running_as_script(self) -> bool:
         """Determine from the executable name whether we run as a script."""
