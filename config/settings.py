@@ -40,9 +40,21 @@ DEFAULT_CHARGE_THRESHOLD: int = 80 # percent
 # --- Default control logic and timing (per profile) ---
 DEFAULT_GUI_UPDATE_INTERVAL_MS: int = 1000 # How often the GUI refreshes status
 DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS: int = 1500 # How often fan speed is adjusted toward the target in auto mode
-DEFAULT_FAN_HYSTERESIS_PERCENT: int = 5 # Temperature change required to trigger a target recalculation
-DEFAULT_MIN_ADJUSTMENT_STEP: int = 1 # Minimum fan speed change per adjustment interval
-DEFAULT_MAX_ADJUSTMENT_STEP: int = 5 # Maximum fan speed change per adjustment interval
+DEFAULT_FAN_HYSTERESIS_PERCENT: int = 5 # °C drop below the anchor before a spin-down target is adopted (rises always apply at once)
+DEFAULT_MAX_ADJUSTMENT_STEP: int = 5 # Max spin-up percent per cycle when rate-limited (heat/safety targets bypass)
+
+# --- Auto-loop temperature conditioning (global constants, not per-profile) ---
+# Control input = median-of-3 -> EMA -> optional dT/dt boost; safety paths use raw temps.
+CONTROL_SMOOTH_WINDOW: int = 4 # raw samples kept per sensor for the median pre-filter
+CONTROL_SMOOTH_EMA_ALPHA: float = 0.4 # weight of the newest median in the EMA
+PREDICT_SLOPE_SAMPLES: int = 7 # smoothed samples used for the dT/dt estimate (~9 s at 1.5 s)
+PREDICT_SLOPE_THRESHOLD_C_PER_S: float = 0.7 # rise rate that arms the predictive boost
+PREDICT_TAU_S: float = 8.0 # seconds of rise the boost extrapolates ahead
+PREDICT_MAX_BOOST_C: float = 12.0 # cap on the extrapolated offset
+PREDICT_ARM_TEMP_C: float = 85.0 # no boost above this temperature (curve is already steep)
+# Spin-up rate limit bypasses: hotter or bigger targets climb instantly.
+UP_RATE_BYPASS_TARGET_PERCENT: int = 60
+UP_RATE_BYPASS_TEMP_C: float = 85.0
 
 # --- Default curve plotting and UI appearance (per profile) ---
 DEFAULT_MIN_DISPLAY_TEMP_C: int = 40 # Minimum temperature shown on the curve plot X axis
@@ -74,7 +86,6 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "gui_update_interval_ms": DEFAULT_GUI_UPDATE_INTERVAL_MS,
     "controller_update_interval_ms": DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS,
     "fan_hysteresis_percent": DEFAULT_FAN_HYSTERESIS_PERCENT,
-    "min_adjustment_step": DEFAULT_MIN_ADJUSTMENT_STEP,
     "max_adjustment_step": DEFAULT_MAX_ADJUSTMENT_STEP,
     "min_display_temp_c": DEFAULT_MIN_DISPLAY_TEMP_C,
     "curve_point_picker_radius": DEFAULT_CURVE_POINT_PICKER_RADIUS,

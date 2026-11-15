@@ -41,6 +41,9 @@ class LightweightCurveCanvas(QWidget):
         self.cpu_curve_data: FanTable = []
         self.gpu_curve_data: FanTable = []
         self.active_curve_type: CurveType = 'cpu'
+        # EC duty mapping clamps curve points below this percentage to the spin floor.
+        from config.models import detect_model, get_preset
+        self._ec_floor_percent: int = int(get_preset(detect_model()).get("fan_percent_min_spin", 0))
         self._appearance_settings: Dict[str, Any] = {}
         self._dragging_point_index: Optional[int] = None
         self._hovered_point_index: Optional[int] = None
@@ -203,6 +206,19 @@ class LightweightCurveCanvas(QWidget):
             painter.drawLine(int(self._plot_area.left()), int(p.y()), int(self._plot_area.right()), int(p.y()))
             painter.setPen(label_color)
             painter.drawText(QRectF(self._plot_area.left() - 50, p.y() - 10, 45, 20), Qt.AlignmentFlag.AlignRight, f"{speed}{tr('percent_unit')}")
+
+        # EC spin floor: anything below this percentage spins at the floor, so show it honestly.
+        floor = getattr(self, '_ec_floor_percent', 0)
+        if 0 < floor < MAX_FAN_PERCENT and floor % 10 != 0:
+            warn_color = QColor(self._get_setting('cpu_temp_indicator_color', '#FF6347'))
+            floor_pen = QPen(warn_color)
+            floor_pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(floor_pen)
+            p = self._data_to_widget_coords(min_temp, floor)
+            painter.drawLine(int(self._plot_area.left()), int(p.y()), int(self._plot_area.right()), int(p.y()))
+            painter.setPen(warn_color)
+            painter.drawText(QRectF(self._plot_area.left() + 6, p.y() - 18, 220, 14),
+                             Qt.AlignmentFlag.AlignLeft, tr('ec_spin_floor_label'))
 
     def _draw_temp_grid_line(self, painter: QPainter, temp: int, grid_pen: QPen, label_color: QColor):
         p = self._data_to_widget_coords(temp, MIN_FAN_PERCENT)

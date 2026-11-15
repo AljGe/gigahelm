@@ -62,12 +62,12 @@ class AsyncCycleTests(unittest.TestCase):
         for _ in range(7):
             self.svc._perform_control_cycle()
             trajectory.append(self.state.get_applied_fan_speed_percent())
-        # kick to 40 from standstill, then -5 per cycle down to the curve target
-        self.assertEqual(trajectory, [40, 35, 30, 25, 20, 17, 17])
+        # soft kick to max(target,30) from standstill, then -5 per cycle down to the curve target
+        self.assertEqual(trajectory, [30, 25, 20, 17, 17, 17, 17])
         duties = [a["duty_raw"] for a in self.svc.wmi_interface.applies]
-        self.assertEqual(len(duties), 6)  # one write per actual change, none for the hold
-        self.assertEqual(duties[0], 91)   # raw(40)
-        self.assertEqual(duties[3], 57)   # min-spin floor clamps 20% -> raw(25)
+        self.assertEqual(len(duties), 4)  # one write per actual change, none for the holds
+        self.assertEqual(duties[0], 69)   # raw(30)
+        self.assertEqual(duties[1], 57)   # min-spin floor clamps 25% -> raw(25)
         self.assertTrue(all(a["reassert_flags"] for a in self.svc.wmi_interface.applies))
 
     def test_keepalive_reassert_after_idle_cycles(self):
@@ -84,6 +84,34 @@ class AsyncCycleTests(unittest.TestCase):
         self.svc._perform_control_cycle()
         self.assertEqual(self.state.get_applied_fan_speed_percent(), 86)
         self.assertEqual(self.svc.wmi_interface.applies[-1]["duty_raw"], 196)
+
+    def test_spin_up_rate_limited_below_bypass_thresholds(self):
+        # 80 C -> curve target 44 (< 60%, < 85 C): climb is capped at +5 per cycle.
+        self.svc.wmi_interface = FakeWMI({"cpu_temp": 80.0, "gpu_temp": -1.0, "gpu_asleep": True})
+        self.state.set_applied_fan_speed_percent(20)
+        self.svc._kick_armed = False
+        self.svc._perform_control_cycle()
+        self.assertEqual(self.state.get_applied_fan_speed_percent(), 25)
+
+    def test_spin_up_instant_for_hot_curve_target(self):
+        # 87 C -> curve target well above 60%: the rate limit is bypassed (jump straight to target).
+        self.svc.wmi_interface = FakeWMI({"cpu_temp": 87.0, "gpu_temp": -1.0, "gpu_asleep": True})
+        self.state.set_applied_fan_speed_percent(20)
+        self.svc._kick_armed = False
+        self.svc._perform_control_cycle()
+        target = self.state.get_auto_fan_target_speed_percent()
+        self.assertGreaterEqual(target, 60)
+        self.assertEqual(self.state.get_applied_fan_speed_percent(), target)
+
+    def test_temperature_spike_does_not_churn_target(self):
+        # A one-cycle +8 C spike is median-filtered: the governing target must not move.
+        self.svc.wmi_interface = FakeWMI({"cpu_temp": 62.0, "gpu_temp": -1.0, "gpu_asleep": True})
+        for _ in range(4):
+            self.svc._perform_control_cycle()
+        self.assertEqual(self.state.get_auto_fan_target_speed_percent(), 17)
+        self.svc.wmi_interface.temps = {"cpu_temp": 70.0, "gpu_temp": -1.0, "gpu_asleep": True}
+        self.svc._perform_control_cycle()
+        self.assertEqual(self.state.get_auto_fan_target_speed_percent(), 17)
 
     def test_bios_midflight_race_corrects_flags(self):
         self.svc.wmi_interface = FakeWMI({"cpu_temp": 62.0, "gpu_temp": -1.0, "gpu_asleep": True})

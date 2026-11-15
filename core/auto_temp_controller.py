@@ -15,7 +15,8 @@ from .state import ProfileState
 from config.settings import (
     MIN_FAN_PERCENT, MAX_FAN_PERCENT,
     MIN_POINTS_FOR_INTERPOLATION,
-    TEMP_READ_ERROR_VALUE, INIT_APPLIED_PERCENTAGE
+    TEMP_READ_ERROR_VALUE, INIT_APPLIED_PERCENTAGE,
+    DEFAULT_FAN_HYSTERESIS_PERCENT
 )
 
 # Type hints
@@ -36,6 +37,11 @@ class AutoTemperatureController(QObject):
 
         # --- Runtime state variables ---
         self._last_theoretical_target: int = INIT_APPLIED_PERCENTAGE
+        # Asymmetric temperature hysteresis: rises apply at once, drops only after the
+        # driving temperature falls below the anchor by fan_hysteresis_percent.
+        self._hysteresis_percent: int = DEFAULT_FAN_HYSTERESIS_PERCENT
+        self._held_target: int = INIT_APPLIED_PERCENTAGE
+        self._held_anchor_temp: Optional[float] = None
 
     def get_last_theoretical_target(self) -> int:
         """Returns the last computed theoretical target speed for UI display."""
@@ -53,12 +59,19 @@ class AutoTemperatureController(QObject):
         self.reset_state()
 
     def update_auto_settings(self, profile: ProfileState):
-        """Kept as a no-op so the appearance_changed connection does not break. The ramp no longer reads the step setting."""
-        return
+        """Reads live auto-mode tuning from the profile (temperature hysteresis)."""
+        try:
+            self._hysteresis_percent = int(profile.get_value("fan_hysteresis_percent"))
+        except (TypeError, ValueError):
+            self._hysteresis_percent = DEFAULT_FAN_HYSTERESIS_PERCENT
+        # Re-anchor once so a changed hysteresis cannot strand a stale hold.
+        self._held_anchor_temp = None
 
     def reset_state(self):
         """Resets the theoretical target cache. The fan ramp flag is reset by AppServices at the call site."""
         self._last_theoretical_target = INIT_APPLIED_PERCENTAGE
+        self._held_target = INIT_APPLIED_PERCENTAGE
+        self._held_anchor_temp = None
 
     def _validate_and_sort(self, table: FanTable) -> FanTable:
         """Sorts the table by temperature and ensures data points are basically valid."""
@@ -125,8 +138,23 @@ class AutoTemperatureController(QObject):
         # The final target is the higher of the CPU and GPU targets to ensure sufficient cooling
         return max(cpu_target, gpu_target)
 
+    def _control_temp(self, cpu_temp: float, gpu_temp: float) -> Optional[float]:
+        """Highest valid sensor temperature; None when no sensor is usable."""
+        temps = [t for t in (cpu_temp, gpu_temp) if t != TEMP_READ_ERROR_VALUE]
+        return max(temps) if temps else None
+
     def theoretical_target(self, cpu_temp: float, gpu_temp: float) -> int:
-        """Returns the curve's theoretical target. No stepping, no hysteresis."""
+        """Curve target with asymmetric temperature hysteresis: rises apply at
+        once, drops require the driving temperature to fall below the anchor by
+        the configured hysteresis. Keeps the fans from hunting around a knee."""
         target = self._calculate_theoretical_target(cpu_temp, gpu_temp)
-        self._last_theoretical_target = target
-        return target
+        ctrl = self._control_temp(cpu_temp, gpu_temp)
+        if (self._held_target == INIT_APPLIED_PERCENTAGE or target >= self._held_target
+                or ctrl is None or self._held_anchor_temp is None):
+            self._held_target = target
+            self._held_anchor_temp = ctrl
+        elif ctrl <= self._held_anchor_temp - self._hysteresis_percent:
+            self._held_target = target
+            self._held_anchor_temp = ctrl
+        self._last_theoretical_target = self._held_target
+        return self._held_target
