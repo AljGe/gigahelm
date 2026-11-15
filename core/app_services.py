@@ -7,12 +7,14 @@ Adds graceful-shutdown logic: on exit, fan control is handed back to the BIOS, a
 import os
 import sys
 import time
+from collections import deque
 from typing import Optional, List, Any, Callable, Dict
 
 from gui.qt import QObject, Slot, QTimer
 
 from .wmi_interface import WMIInterface, WMIError
 from .auto_temp_controller import AutoTemperatureController
+from .control_smoothing import smooth_and_predict
 from .state import AppState, ProfileState
 from .fan_duty import percent_to_raw
 from .fan_ramp import next_fan_percent
@@ -23,7 +25,9 @@ from config.settings import (
     CHARGE_POLICY_CUSTOM, BATTERY_POLICY_CODES, BATTERY_CODE_POLICIES,
     INIT_APPLIED_PERCENTAGE, TEMP_READ_ERROR_VALUE,
     SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_STATUS,
-    SET_CHARGE_POLICY, SET_CHARGE_STOP, WMIInternalSignal
+    SET_CHARGE_POLICY, SET_CHARGE_STOP, WMIInternalSignal,
+    CONTROL_SMOOTH_WINDOW, PREDICT_SLOPE_SAMPLES, DEFAULT_MAX_ADJUSTMENT_STEP,
+    UP_RATE_BYPASS_TARGET_PERCENT, UP_RATE_BYPASS_TEMP_C
 )
 
 # H4 keepalive: reassert the software-control EC flags at least this often (cycles).
@@ -54,6 +58,12 @@ class AppServices(QObject):
         self._cycle_in_flight = False
         self._cycles_since_flag_reassert = 0
         self._pending_cycle: Optional[Dict[str, int]] = None
+        # Auto-loop temperature conditioning state (see core/control_smoothing.py).
+        self._cpu_temp_hist: deque = deque(maxlen=CONTROL_SMOOTH_WINDOW)
+        self._gpu_temp_hist: deque = deque(maxlen=CONTROL_SMOOTH_WINDOW)
+        self._cpu_smooth_hist: deque = deque(maxlen=PREDICT_SLOPE_SAMPLES)
+        self._gpu_smooth_hist: deque = deque(maxlen=PREDICT_SLOPE_SAMPLES)
+        self._max_up_step: int = DEFAULT_MAX_ADJUSTMENT_STEP
         self._cycle_watchdog = QTimer(self)
         self._cycle_watchdog.setSingleShot(True)
         self._cycle_watchdog.timeout.connect(self._on_cycle_watchdog)
@@ -109,12 +119,30 @@ class AppServices(QObject):
                 self._current_profile.get_cpu_fan_table(),
                 self._current_profile.get_gpu_fan_table()
             )
+            self._reset_smoothing()
             self._arm_software_ramp()
+
+    def _reset_smoothing(self):
+        """Clears temperature conditioning history (profile/curve switch, resume)."""
+        self._cpu_temp_hist.clear()
+        self._gpu_temp_hist.clear()
+        self._cpu_smooth_hist.clear()
+        self._gpu_smooth_hist.clear()
+
+    def _condition_temperature(self, raw_hist: deque, smooth_hist: deque, raw: float) -> Optional[float]:
+        """Median -> EMA -> dT/dt boost; None for error samples (history untouched)."""
+        if raw == TEMP_READ_ERROR_VALUE:
+            return None
+        return smooth_and_predict(raw_hist, smooth_hist, float(raw), self.controller_timer.interval() / 1000.0)
 
     def _update_controller_settings(self):
         if self._current_profile:
             self.auto_temp_controller.update_auto_settings(self._current_profile)
-            
+            try:
+                self._max_up_step = max(0, int(self._current_profile.get_value("max_adjustment_step")))
+            except (TypeError, ValueError):
+                self._max_up_step = DEFAULT_MAX_ADJUSTMENT_STEP
+
             controller_interval = self._current_profile.get_value('controller_update_interval_ms')
             if self.controller_timer.interval() != controller_interval:
                 self.controller_timer.setInterval(controller_interval)
@@ -202,6 +230,7 @@ class AppServices(QObject):
         profile = self._current_profile
         if not profile:
             return
+        self._reset_smoothing()  # pre-sleep samples are stale
         self._arm_software_ramp()
         mode = profile.get_fan_mode()
         self.set_fan_mode(mode)
@@ -311,11 +340,17 @@ class AppServices(QObject):
         except WMIError as e:
             print(f"WMI operation failed in 'set_battery_charge_threshold': {e}", file=sys.stderr)
             self.state.set_controller_status_message(tr("wmi_error"))
-    def _select_fan_target(self, mode: str, cpu_temp: float, gpu_temp: float, gpu_asleep: bool = False) -> int:
+    def _select_fan_target(self, mode: str, cpu_temp: float, gpu_temp: float, gpu_asleep: bool = False,
+                           cpu_ctrl: Optional[float] = None, gpu_ctrl: Optional[float] = None) -> int:
         if mode == FAN_MODE_CUSTOM and self._current_profile:
             base = int(self._current_profile.get_custom_fan_speed())
         else:
-            base = self.auto_temp_controller.theoretical_target(cpu_temp, gpu_temp)
+            # Curve input uses the conditioned (median/EMA/boost) temperatures;
+            # safety logic below always sees the raw values.
+            base = self.auto_temp_controller.theoretical_target(
+                cpu_temp if cpu_ctrl is None else cpu_ctrl,
+                gpu_temp if gpu_ctrl is None else gpu_ctrl,
+            )
         cpu_bad = cpu_temp == TEMP_READ_ERROR_VALUE
         # A sleeping dGPU reports 0 (no sensor to read) - not a failure; the CPU curve decides alone.
         gpu_bad = gpu_temp == TEMP_READ_ERROR_VALUE and not gpu_asleep
@@ -363,12 +398,21 @@ class AppServices(QObject):
                 self.state.set_cpu_temp(cpu_temp)
                 self.state.set_gpu_temp(gpu_temp)
             self.state.set_gpu_asleep(gpu_asleep)
-            target = self._select_fan_target(mode, cpu_temp, gpu_temp, gpu_asleep)
+            cpu_ctrl = self._condition_temperature(self._cpu_temp_hist, self._cpu_smooth_hist, cpu_temp)
+            gpu_ctrl = None if gpu_asleep else self._condition_temperature(self._gpu_temp_hist, self._gpu_smooth_hist, gpu_temp)
+            target = self._select_fan_target(mode, cpu_temp, gpu_temp, gpu_asleep, cpu_ctrl, gpu_ctrl)
+            # Spin-up rate limit; bypassed for big targets or hot sensors (safety snappiness).
+            max_up_step = self._max_up_step
+            hot = (cpu_temp != TEMP_READ_ERROR_VALUE and cpu_temp >= UP_RATE_BYPASS_TEMP_C) or (
+                not gpu_asleep and gpu_temp != TEMP_READ_ERROR_VALUE and gpu_temp >= UP_RATE_BYPASS_TEMP_C)
+            if target >= UP_RATE_BYPASS_TARGET_PERCENT or hot:
+                max_up_step = 0
             percent, self._kick_armed, self._spinning_down = next_fan_percent(
                 self.state.get_applied_fan_speed_percent(),
                 target,
                 self._kick_armed,
                 self._spinning_down,
+                max_up_step,
             )
             changed = percent != self.state.get_applied_fan_speed_percent()
             self._cycles_since_flag_reassert += 1
