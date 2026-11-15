@@ -1,21 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-Fan control panel QFrame - a self-contained view component.
-Inherits from BaseControlPanel and provides the fan-control-specific UI configuration.
+Fan control card - self-contained view component.
+
+Inherits from BaseControlPanel and adds the fan-specific live row: the speed
+the EC is currently applying plus the detail line (curve target / EC raw).
 """
+
+from typing import Optional
+
 from .qt import QWidget
 from .base_control_panel import BaseControlPanel
 from core.state import AppState
 from core.profile_manager import ProfileManager
-from config.settings import FAN_MODE_CUSTOM
-from typing import Optional
+from config.settings import FAN_MODE_AUTO, FAN_MODE_CUSTOM, FAN_MODE_UNKNOWN
+from tools.localization import tr
+
 
 class FanControlPanel(BaseControlPanel):
     """Dedicated view component for fan control."""
-    
+
     def __init__(self, state: AppState, profile_manager: ProfileManager, parent: Optional[QWidget] = None):
         config = {
-            "mode_label_key": "fan_mode_label",
+            "card_title_key": "card_fan_title",
+            "card_desc_key": "card_fan_desc",
             "radio_configs": [("bios", "mode_bios"), ("auto", "mode_auto"), ("custom", "mode_custom")],
             "slider_label_key": "custom_speed_label",
             "slider_range": (0, 100),
@@ -31,3 +38,41 @@ class FanControlPanel(BaseControlPanel):
             "is_fan_control": True,
         }
         super().__init__(config, state, profile_manager, parent)
+
+    def _connect_live_signals(self) -> None:
+        self.state.applied_fan_mode_changed.connect(self._on_live_changed)
+        self.state.applied_fan_speed_percent_changed.connect(self._on_live_changed)
+        self.state.auto_fan_target_speed_percent_changed.connect(self._on_live_changed)
+        self.state.ec_fixed_fan_speed_raw_changed.connect(self._on_live_changed)
+
+    def _on_live_changed(self, *_args) -> None:
+        self._update_live_display()
+
+    def _update_live_display(self) -> None:
+        if not self.state.get_is_fan_control_panel_enabled():
+            self.live_value_label.setText(tr("fan_unavailable_text"))
+            self.live_line_label.setText("")
+            return
+
+        mode = self.state.get_applied_fan_mode()
+        raw = self._optional_count(self.state.get_ec_fixed_fan_speed_raw())
+        applied = self.state.get_applied_fan_speed_percent()
+
+        if mode == FAN_MODE_UNKNOWN:
+            self.live_value_label.setText(tr("fan_unavailable_text"))
+            self.live_line_label.setText("")
+            return
+
+        if mode == FAN_MODE_AUTO:
+            self.live_value_label.setText(f"{applied}{tr('percent_unit')}")
+            self.live_line_label.setText(tr(
+                "fan_display_auto_format",
+                target=self.state.get_auto_fan_target_speed_percent(),
+                raw=raw,
+            ))
+        elif mode == FAN_MODE_CUSTOM:
+            self.live_value_label.setText(f"{applied}{tr('percent_unit')}")
+            self.live_line_label.setText(tr("fan_display_custom_format", raw=raw))
+        else:
+            self.live_value_label.setText(tr("mode_bios"))
+            self.live_line_label.setText(tr("fan_display_bios_format"))

@@ -33,16 +33,22 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QIcon,
     QAction,
+    QImage,
     QPainter,
     QColor,
     QPen,
     QBrush,
     QFont,
+    QFontDatabase,
+    QFontMetrics,
+    QLinearGradient,
+    QPainterPath,
     QPolygonF,
     QCloseEvent,
     QShowEvent,
     QHideEvent,
     QMouseEvent,
+    QContextMenuEvent,
     QResizeEvent,
     QPixmap,
     QCursor,
@@ -85,3 +91,11 @@ try:
 except ImportError:
     print("Warning: PySide6.QtSvg module not found. SVG icons will be unavailable. Run 'pip install PySide6-Addons'.")
     QSvgRenderer = None
+
+
+def repolish(widget: "QWidget") -> None:
+    """Force a widget to re-read its stylesheet after a dynamic property changed."""
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    widget.update()

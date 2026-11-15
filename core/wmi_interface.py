@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Provides an extremely thin, flat WMI interaction interface.
-This module is a pure, passive service provider.
+提供一个极其轻薄、扁平化的WMI交互接口。
+该模块是一个纯粹的、被动的服务提供者。
 """
 
 import threading
@@ -9,7 +9,7 @@ import queue
 import time
 import math
 import sys
-from typing import Optional, Any, Dict, Tuple, Callable
+from typing import Optional, Any, Dict, Tuple, Callable, List
 
 from gui.qt import QObject, QTimer, Slot
 
@@ -23,6 +23,9 @@ except ImportError:
     wmi = None
     pythoncom = None
 
+from .battery_health import get_battery_health
+from tools.system_utils import set_thread_priority_above_normal
+
 from config.settings import (
     WMI_NAMESPACE, DEFAULT_WMI_GET_CLASS, DEFAULT_WMI_SET_CLASS,
     GET_CPU_TEMP, GET_GPU_TEMP1, GET_GPU_TEMP2,
@@ -32,8 +35,9 @@ from config.settings import (
     GET_BATTERY_HEALTH, GET_BATT_CYC, GET_BATT_CYC1,
     SET_CUSTOM_FAN_STATUS, SET_SUPER_QUIET, SET_AUTO_FAN_STATUS,
     SET_STEP_FAN_STATUS, SET_CUSTOM_FAN_SPEED, SET_GPU_FAN_DUTY,
-    WMI_REQUEST_TIMEOUT_S, TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
-    CHARGE_POLICY_READ_ERROR_VALUE, CHARGE_THRESHOLD_READ_ERROR_VALUE,
+    SET_CHARGE_POLICY, SET_CHARGE_STOP,
+    WMI_REQUEST_TIMEOUT_S, WMI_ASYNC_RESULT_TIMEOUT_S,
+    TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
     WMIInternalSignal
 )
 
@@ -49,7 +53,12 @@ class WMICommandError(WMIError):
         self.original_exception = original_exception
 
 class WMIWorker(threading.Thread):
-    """Background thread handling all blocking WMI calls."""
+    """后台线程，处理所有阻塞的WMI调用。
+
+    Every worker owns its queue.  A hung worker can therefore never consume a
+    STOP sentinel intended for its replacement, and a replacement never shares
+    a queue with the old thread.
+    """
     def __init__(self, request_queue: queue.Queue, wmi_get_class: str, wmi_set_class: str):
         super().__init__(name="WMIWorkerThread", daemon=True)
         self._request_queue = request_queue
@@ -60,12 +69,26 @@ class WMIWorker(threading.Thread):
         self._com_initialized: bool = False
         self.initialization_error: Optional[Exception] = None
         self.initialization_complete = threading.Event()
+        self._stop_event = threading.Event()
         self._latest_core_sensor_data: Dict[str, Any] = {}
         self._data_lock = threading.Lock()
+        self._call_pending = False
+
+    def request_stop(self):
+        """Ask the loop to exit; also used when a hung worker is retired."""
+        self._stop_event.set()
+        try:
+            self._request_queue.put_nowait((WMIInternalSignal.STOP, {}, None))
+        except queue.Full:
+            pass
+
+    @property
+    def stopping(self) -> bool:
+        return self._stop_event.is_set()
 
     def _init_wmi(self) -> bool:
         if not _wmi_available or not pythoncom or not wmi:
-            self.initialization_error = WMIConnectionError("WMI or pythoncom library not found.")
+            self.initialization_error = WMIConnectionError("WMI或pythoncom库未找到。")
             return False
         try:
             pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
@@ -94,60 +117,131 @@ class WMIWorker(threading.Thread):
             self._com_initialized = False
 
     def run(self):
-        """Main loop of the WMI worker thread; processes only the request queue."""
+        """WMI工作线程的主循环，仅处理自己的请求队列。"""
+        # Above-normal priority: under all-core CPU saturation a normal-
+        # priority worker starves, cycles stall, and the EC latches the last
+        # duty (observed as fans parked at 0-25 % at 90 C). The control loop
+        # is the app's reason to exist - it outranks burner-class load.
+        set_thread_priority_above_normal()
         if not self._init_wmi():
             self.initialization_complete.set()
             return
         self.initialization_complete.set()
 
-        while True:
-            request = self._request_queue.get()
+        while not self._stop_event.is_set():
+            try:
+                request = self._request_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
             if request[0] is WMIInternalSignal.STOP:
                 break
+            if self._stop_event.is_set():
+                break
             self._process_request(request)
-        
+
         self._cleanup_com()
 
     def get_latest_core_sensor_data(self) -> Dict[str, Any]:
         with self._data_lock:
             return self._latest_core_sensor_data.copy()
 
+    def _dispatch(self, method_or_signal: Any, params: Dict[str, Any]) -> Any:
+        """Smart dispatch: choose the WMI object/executor for one request."""
+        if method_or_signal is WMIInternalSignal.POLL_CORE_SENSORS:
+            result = self._get_core_sensors()
+            with self._data_lock: self._latest_core_sensor_data = result
+            return result
+        if method_or_signal is WMIInternalSignal.APPLY_FAN_CONTROL:
+            return self._apply_fan_control(
+                float(params.get("duty_raw", 0.0)),
+                bool(params.get("reassert_flags", True)),
+            )
+        if method_or_signal is WMIInternalSignal.APPLY_BIOS_CONTROL:
+            return self._apply_bios_control()
+        if method_or_signal is WMIInternalSignal.APPLY_CHARGE_POLICY:
+            return self._apply_charge_policy(
+                float(params.get("policy", 0.0)),
+                params.get("threshold"),
+            )
+        if method_or_signal == "_get_all_sensors":
+            return self._get_all_sensors()
+        if method_or_signal == "_get_temperatures":
+            return self._get_temperatures()
+        if method_or_signal == "_get_core_sensors":
+            return self._get_core_sensors()
+        if isinstance(method_or_signal, str):
+            method_name = method_or_signal
+            target_obj = self._wmi_set_obj if method_name.startswith("Set") else self._wmi_get_obj
+            return self._execute_wmi_method(target_obj, method_name, **params)
+        raise ValueError("无效的WMI请求类型")
+
     def _process_request(self, request: WMIRequest):
-        """Processes a single request, intelligently selecting the WMI object and calling the core executor."""
+        """处理单个请求：受限时间执行。EC/驱动可能无限期阻塞 COM 调用，
+        因此每个请求在独立线程中执行并有硬超时；超时后该调用被放弃，
+        工作线程保持响应（周期看门狗/外部看门狗负责后续恢复）。
+        """
         method_or_signal, params, callback_queue = request
-        result, exception = None, None
+
+        # A previously abandoned call may still be blocked in the driver.
+        # Fail fast instead of stacking runner threads.
+        if self._call_pending:
+            exception: Optional[Exception] = WMIRequestTimeoutError(
+                "previous WMI call still pending")
+            if callback_queue:
+                try: callback_queue.put((None, exception), block=False)
+                except queue.Full: print("Warning: WMI response queue is full.", file=sys.stderr)
+            return
+
+        outcome: Dict[str, Any] = {}
+        done = threading.Event()
+
+        def _execute() -> None:
+            result, exc = None, None
+            try:
+                result = self._dispatch(method_or_signal, params)
+            except Exception as e:
+                exc = e
+            outcome["result"], outcome["exception"] = result, exc
+            done.set()
+
+        self._call_pending = True
+        runner = threading.Thread(target=_execute, daemon=True,
+                                  name="WMICallRunner")
         try:
-            if method_or_signal is WMIInternalSignal.POLL_CORE_SENSORS:
-                result = self._get_core_sensors()
-                with self._data_lock: self._latest_core_sensor_data = result
-            elif method_or_signal is WMIInternalSignal.APPLY_FAN_CONTROL:
-                result = self._apply_fan_control(
-                    float(params.get("duty_raw", 0.0)),
-                    bool(params.get("reassert_flags", True)),
-                )
-            elif method_or_signal == "_get_all_sensors":
-                result = self._get_all_sensors()
-            elif method_or_signal == "_get_temperatures":
-                result = self._get_temperatures()
-            elif isinstance(method_or_signal, str):
-                method_name = method_or_signal
-                target_obj = self._wmi_set_obj if method_name.startswith("Set") else self._wmi_get_obj
-                result = self._execute_wmi_method(target_obj, method_name, **params)
-            else:
-                exception = ValueError("Invalid WMI request type")
-        except Exception as e:
-            exception = e
-        
+            runner.start()
+            runner.join(WMI_REQUEST_TIMEOUT_S)
+        except Exception:
+            self._call_pending = False
+            raise
+        if done.is_set():
+            self._call_pending = False   # completed: EC slot free again
+            result = outcome.get("result")
+            exception = outcome.get("exception")
+        else:
+            # Abandoned call still blocked in the driver: keep the pending
+            # flag until it drains so later requests fail fast instead of
+            # stacking runner threads behind it.
+            result = None
+            exception = WMIRequestTimeoutError(
+                f"WMI call timed out after {WMI_REQUEST_TIMEOUT_S:.0f} s")
+
+            def _reap() -> None:
+                runner.join()
+                self._call_pending = False
+
+            threading.Thread(target=_reap, daemon=True,
+                             name="WMICallReaper").start()
+
         if callback_queue:
             try: callback_queue.put((result, exception), block=False)
             except queue.Full: print("Warning: WMI response queue is full.", file=sys.stderr)
 
     def _execute_wmi_method(self, wmi_obj: Any, method_name: str, **kwargs) -> Any:
-        """Single entry point for executing any WMI method."""
+        """执行任何WMI方法的唯一入口。"""
         if not wmi_obj: raise WMIConnectionError("WMI object is unavailable.")
         method_func = getattr(wmi_obj, method_name)
         raw_result = method_func(**kwargs)
-        # Inline result parsing
+        # 内联结果解析
         return raw_result[0] if isinstance(raw_result, tuple) and len(raw_result) > 0 else raw_result
 
     def _validate_temp(self, value: Any) -> float:
@@ -157,15 +251,23 @@ class WMIWorker(threading.Thread):
         except (ValueError, TypeError): return TEMP_READ_ERROR_VALUE
 
     def _validate_rpm(self, value: Any) -> int:
+        """Decode an EC RPM word: raw-plausible-first.
+
+        Trusts a raw word within plausibility (0..8000) first; the
+        byte-swapped word is used only when raw is implausible. Matches
+        tools/bench/ec_probe.decode_rpm so app display, stall detection and
+        bench analysis agree. Values <= 50 decode to fans-off; implausible
+        words are RPM_READ_ERROR.
+        """
         try:
             raw = int(value) & 0xFFFF
         except (ValueError, TypeError):
             return RPM_READ_ERROR_VALUE
         swapped = ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)
-        if 0 <= swapped <= 8000:
-            chosen = swapped
-        elif 0 <= raw <= 8000:
+        if 0 <= raw <= 8000:
             chosen = raw
+        elif 0 <= swapped <= 8000:
+            chosen = swapped
         else:
             return RPM_READ_ERROR_VALUE
         return 0 if chosen <= 50 else chosen
@@ -192,6 +294,18 @@ class WMIWorker(threading.Thread):
         self._execute_wmi_method(self._wmi_set_obj, SET_CUSTOM_FAN_SPEED, Data=float(duty_raw))
         self._execute_wmi_method(self._wmi_set_obj, SET_GPU_FAN_DUTY, Data=float(duty_raw))
         return {"applied": True}
+
+    def _apply_bios_control(self) -> Dict[str, Any]:
+        """Hand the fans back to the EC's automatic mode."""
+        self._execute_wmi_method(self._wmi_set_obj, SET_AUTO_FAN_STATUS, Data=1.0)
+        self._execute_wmi_method(self._wmi_set_obj, SET_CUSTOM_FAN_STATUS, Data=0.0)
+        return {"applied": True}
+
+    def _apply_charge_policy(self, policy: float, threshold: Any) -> Dict[str, Any]:
+        self._execute_wmi_method(self._wmi_set_obj, SET_CHARGE_POLICY, Data=float(policy))
+        if threshold is not None:
+            self._execute_wmi_method(self._wmi_set_obj, SET_CHARGE_STOP, Data=float(threshold))
+        return {"applied": True, "threshold": threshold}
 
     def _get_temperatures(self) -> Dict[str, Any]:
         cpu_temp = self._validate_temp(self._execute_wmi_method(self._wmi_get_obj, GET_CPU_TEMP))
@@ -221,7 +335,7 @@ class WMIWorker(threading.Thread):
         if threshold >= 0:
             data["charge_threshold"] = threshold
         data["ec_fixed_fan_speed_raw"] = self._read_optional_int(GET_FIXED_FAN_SPEED)
-        data["battery_health"] = self._read_optional_int(GET_BATTERY_HEALTH)
+        data["battery_health"] = get_battery_health(self._read_optional_int(GET_BATTERY_HEALTH))
         cycles = [value for value in (
             self._read_optional_int(GET_BATT_CYC),
             self._read_optional_int(GET_BATT_CYC1),
@@ -235,56 +349,98 @@ class WMIWorker(threading.Thread):
         return data
 
 class WMIInterface(QObject):
-    """Provides a minimal, thread-safe public API for WMI operations."""
+    """提供一个极简的、线程安全的WMI操作公共API。"""
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
-        self._request_queue = queue.Queue(maxsize=50)
+        self._lock = threading.RLock()
+        self._request_queue: Optional[queue.Queue] = None
         self._worker_thread: Optional[WMIWorker] = None
+        self._retired_workers: List[WMIWorker] = []
         self._is_running = False
         self._initialization_error: Optional[Exception] = None
-        # No internal timer needed anymore
 
     @property
     def is_running(self) -> bool:
-        return self._is_running and self._worker_thread is not None and self._worker_thread.is_alive()
+        with self._lock:
+            return (
+                self._is_running
+                and self._worker_thread is not None
+                and self._worker_thread.is_alive()
+            )
 
     def start(self, init_timeout: float = 15.0) -> bool:
-        if self.is_running: return self._initialization_error is None
-        if not _wmi_available:
-            self._initialization_error = WMIConnectionError("WMI library not found.")
-            return False
+        with self._lock:
+            if self.is_running:
+                return self._initialization_error is None
+            if not _wmi_available:
+                self._initialization_error = WMIConnectionError("WMI库未找到。")
+                return False
 
-        self._initialization_error = None
-        self._worker_thread = WMIWorker(self._request_queue, DEFAULT_WMI_GET_CLASS, DEFAULT_WMI_SET_CLASS)
-        self._worker_thread.start()
-        
-        self._worker_thread.initialization_complete.wait(timeout=init_timeout)
-        if self._worker_thread.initialization_error or not self._worker_thread.is_alive():
-            self._initialization_error = self._worker_thread.initialization_error or WMIConnectionError("WMI worker thread failed to start.")
-            self._worker_thread = None
-            return False
-        
-        self._is_running = True
-        return True
+            # Never reuse the queue of a worker that may still be hung in COM:
+            # that is how a stale STOP token used to kill its replacement.
+            self._initialization_error = None
+            request_queue: queue.Queue = queue.Queue(maxsize=50)
+            worker = WMIWorker(request_queue, DEFAULT_WMI_GET_CLASS, DEFAULT_WMI_SET_CLASS)
+            self._request_queue = request_queue
+            self._worker_thread = worker
+
+        worker.start()
+        worker.initialization_complete.wait(timeout=init_timeout)
+
+        with self._lock:
+            if worker.initialization_error or not worker.is_alive():
+                self._initialization_error = worker.initialization_error or WMIConnectionError("WMI工作线程未能启动。")
+                worker.request_stop()
+                if self._worker_thread is worker:
+                    self._worker_thread = None
+                    self._request_queue = None
+                    self._is_running = False
+                return False
+            self._is_running = True
+            return True
 
     def stop(self, join_timeout: float = WMI_REQUEST_TIMEOUT_S):
-        if not self.is_running or not self._worker_thread: return
-        self._is_running = False
-        self._request_queue.put((WMIInternalSignal.STOP, {}, None))
-        self._worker_thread.join(timeout=join_timeout)
-        self._worker_thread = None
+        with self._lock:
+            worker = self._worker_thread
+            self._is_running = False
+            self._worker_thread = None
+            self._request_queue = None
+        if not worker:
+            return
+
+        worker.request_stop()
+        worker.join(timeout=join_timeout)
+        if worker.is_alive():
+            # The COM call is still stuck.  The stop event makes sure this
+            # thread exits as soon as it returns and never processes another
+            # request; the replacement owns a fresh queue.
+            print(
+                f"WMI worker did not stop within {join_timeout:.1f}s; retiring it.",
+                file=sys.stderr,
+            )
+            with self._lock:
+                self._retired_workers.append(worker)
+                self._retired_workers = [w for w in self._retired_workers if w.is_alive()][-8:]
 
     def get_initialization_error(self) -> Optional[Exception]:
         return self._initialization_error
 
+    def _current_queue(self) -> Optional[queue.Queue]:
+        with self._lock:
+            if not self.is_running:
+                return None
+            return self._request_queue
+
     def _execute_sync(self, method_or_signal: Any, params: Optional[Dict] = None, timeout: float = WMI_REQUEST_TIMEOUT_S) -> Any:
-        if not self.is_running: raise self._initialization_error or WMIConnectionError("WMI interface is not running.")
+        request_queue = self._current_queue()
+        if request_queue is None:
+            raise self._initialization_error or WMIConnectionError("WMI interface is not running.")
         result_queue = queue.Queue(maxsize=1)
         request: WMIRequest = (method_or_signal, params or {}, result_queue)
         try:
-            self._request_queue.put(request, block=True, timeout=1.0)
+            request_queue.put(request, block=True, timeout=1.0)
         except queue.Full:
-            raise WMIRequestTimeoutError(f"WMI request queue is full.")
+            raise WMIRequestTimeoutError("WMI request queue is full.")
         try:
             result, exc = result_queue.get(block=True, timeout=timeout)
             if exc: raise WMICommandError(f"WMI method '{method_or_signal}' failed.", original_exception=exc)
@@ -297,12 +453,13 @@ class WMIInterface(QObject):
         """Fire a WMI request without blocking the caller (GUI) thread.
         The callback fires exactly once, on the caller's thread, with (result, exception).
         A periodic QTimer drains the result queue - no cross-thread signal marshalling needed."""
-        if not self.is_running:
+        request_queue = self._current_queue()
+        if request_queue is None:
             if on_done: on_done(None, self._initialization_error or WMIConnectionError("WMI interface is not running."))
             return True
         result_queue: queue.Queue = queue.Queue(maxsize=1)
         try:
-            self._request_queue.put_nowait((method_or_signal, params or {}, result_queue))
+            request_queue.put_nowait((method_or_signal, params or {}, result_queue))
         except queue.Full:
             if on_done: on_done(None, WMIRequestTimeoutError("WMI request queue is full."))
             return True
@@ -310,45 +467,54 @@ class WMIInterface(QObject):
             return True
         timer = QTimer(self)
         timer.setInterval(20)
+        deadline = time.monotonic() + WMI_ASYNC_RESULT_TIMEOUT_S
+
         def _poll():
             try:
                 result, exc = result_queue.get_nowait()
             except queue.Empty:
+                if time.monotonic() >= deadline:
+                    timer.stop()
+                    timer.deleteLater()
+                    on_done(None, WMIRequestTimeoutError(f"WMI request '{method_or_signal}' timed out."))
                 return
             timer.stop()
             timer.deleteLater()
             on_done(result, exc)
+
         timer.timeout.connect(_poll)
         timer.start()
         return True
 
-    # --- Public API methods ---
+    # --- 公共API方法 ---
     def execute_method(self, method_name: str, **kwargs) -> Any:
-        """Generic blocking WMI method executor, mainly for setters."""
+        """通用的、阻塞式的WMI方法执行器；仅用于退出等必须同步的路径。"""
         if 'Data' in kwargs and isinstance(kwargs['Data'], (int, float)):
              kwargs['Data'] = float(kwargs['Data'])
         return self._execute_sync(method_name, kwargs)
 
     def get_latest_core_sensor_data(self) -> Dict[str, Any]:
-        """Non-blocking fetch of the latest cached core sensor data (temperatures, RPMs)."""
-        if not self.is_running or not self._worker_thread: return {}
-        return self._worker_thread.get_latest_core_sensor_data()
+        """非阻塞地从缓存获取最新的核心传感器数据（温度、转速）。"""
+        with self._lock:
+            worker = self._worker_thread
+        if not worker: return {}
+        return worker.get_latest_core_sensor_data()
 
     def get_all_sensors_sync(self) -> Dict[str, Any]:
-        """Blocking fetch of all sensor data (including battery)."""
+        """阻塞式地获取所有传感器数据（包括电池）。"""
         return self._execute_sync("_get_all_sensors")
 
     def get_temperatures_sync(self) -> Dict[str, float]:
-        """Blocking fetch of only the CPU and GPU temperatures."""
+        """阻塞式地仅获取CPU和GPU温度。"""
         return self._execute_sync("_get_temperatures")
 
     def request_core_sensor_poll(self):
-        """
-        Non-blocking method called by AppServices to request one background core sensor poll.
-        """
-        if self.is_running:
-            try:
-                self._request_queue.put_nowait((WMIInternalSignal.POLL_CORE_SENSORS, {}, None))
-            except queue.Full:
-                # A full queue is normal (background busy); just ignore this request
-                pass
+        """由AppServices调用的非阻塞方法，用于请求一次后台核心传感器轮询。"""
+        request_queue = self._current_queue()
+        if request_queue is None:
+            return
+        try:
+            request_queue.put_nowait((WMIInternalSignal.POLL_CORE_SENSORS, {}, None))
+        except queue.Full:
+            # 队列满是正常情况，意味着后台繁忙，忽略本次请求即可
+            pass

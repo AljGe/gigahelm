@@ -65,18 +65,19 @@ def log_message(message: str):
     except Exception:
         pass
 
-def set_emergency_fan_speed():
+def set_emergency_fan_speed() -> bool:
     """
     Standalone entry point that sets the emergency fan speed.
+    Returns True only after every EC write succeeded.
     """
     log_message("Emergency fan setter script started...")
-    
+
     try:
         import wmi
         import pythoncom
-    except ImportError as exc:
+    except ImportError:
         log_message("Error: wmi or pythoncom library not found. Cannot set emergency speed.")
-        raise exc
+        return False
 
     com_initialized = False
     try:
@@ -109,7 +110,7 @@ def set_emergency_fan_speed():
     except Exception:
         log_message("Error: failed to set emergency fan speed.")
         log_message(traceback.format_exc())
-        raise
+        return False
     finally:
         if com_initialized:
             try:
@@ -118,6 +119,8 @@ def set_emergency_fan_speed():
             except Exception:
                 log_message("Warning: COM library uninitialization failed.")
         log_message("Emergency fan setter script finished.")
+    return True
 
 if __name__ == "__main__":
-    set_emergency_fan_speed()
+    import sys
+    sys.exit(0 if set_emergency_fan_speed() else 1)
