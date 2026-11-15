@@ -1,4 +1,6 @@
-# Gigabyte Fan & Battery Control
+# Gigahelm
+
+Fan curves & battery charge control for Gigabyte laptops — a Windows tray application speaking the reverse-engineered Gigabyte EC WMI interface.
 
 Community continuation of [Ixmoon/Gigabyte-Fan-Battery-Center](https://github.com/Ixmoon/Gigabyte-Fan-Battery-Center) (MIT), discontinued by its author in 2025. This fork carries the project forward with hardening work focused on crash-safety, hardware safety nets, and honest multi-model support. Not affiliated with or endorsed by Gigabyte.
 
@@ -27,7 +29,7 @@ Run `main.exe --diagnose` on your machine to dump which WMI methods your EC expo
 
 ## Install
 
-Grab `FanBatteryControl-windows.zip` from [Releases](../../releases), unzip anywhere (`C:\Tools\GFBC` is the documented layout), run `main.exe`, confirm the UAC prompt, tick **Start on Boot**.
+Grab `gigahelm-windows.zip` from [Releases](../../releases), unzip anywhere (`C:\Tools\GFBC` is the documented layout), run `main.exe`, confirm the UAC prompt, tick **Start on Boot**.
 
 Requires: Windows 10/11, a Gigabyte laptop exposing the GB WMI EC interface, and (unless you follow the next section) whatever driver stack shipped with it.
 

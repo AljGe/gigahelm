@@ -35,7 +35,7 @@ jobs:
         run: ./tools/build_gfb.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: FanBatteryControl-windows
+          name: gigahelm-windows
           path: dist/main/
           retention-days: 14
 
@@ -56,12 +56,12 @@ jobs:
       - name: Package and checksum
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/main -DestinationPath FanBatteryControl-windows.zip
-          $hash = (Get-FileHash -Algorithm SHA256 FanBatteryControl-windows.zip).Hash
-          "$hash  FanBatteryControl-windows.zip" | Out-File FanBatteryControl-windows.zip.sha256 -Encoding ascii
+          Compress-Archive -Path dist/main -DestinationPath gigahelm-windows.zip
+          $hash = (Get-FileHash -Algorithm SHA256 gigahelm-windows.zip).Hash
+          "$hash  gigahelm-windows.zip" | Out-File gigahelm-windows.zip.sha256 -Encoding ascii
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            FanBatteryControl-windows.zip
-            FanBatteryControl-windows.zip.sha256
+            gigahelm-windows.zip
+            gigahelm-windows.zip.sha256

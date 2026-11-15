@@ -17,7 +17,7 @@ from config.settings import DEFAULT_LANGUAGE, KNOWN_LANGUAGES
 # --- Default English translations ---
 DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     # Window and UI elements
-    "window_title": "Fan & Battery Control",
+    "window_title": "Gigahelm",
     "cpu_temp_label": "CPU Temp:",
     "gpu_temp_label": "GPU Temp:",
     "cpu_fan_rpm_label": "CPU Fan RPM:",
@@ -120,7 +120,7 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
 # --- Default Chinese translations ---
 DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     # Window and UI elements
-    "window_title": "风扇 & 电池控制",
+    "window_title": "Gigahelm",
     "cpu_temp_label": "CPU 温度:",
     "gpu_temp_label": "GPU 温度:",
     "cpu_fan_rpm_label": "CPU 风扇转速:",
