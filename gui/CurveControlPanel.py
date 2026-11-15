@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-曲线控制面板QFrame - 一个自包含的视图组件，管理所有配置文件和曲线相关的交互。
+Curve control panel QFrame - a self-contained view component managing all
+profile and curve interactions.
 """
 from .qt import *
 from typing import List, Optional
@@ -12,7 +13,7 @@ from .tooltip_manager import tooltip_manager
 from .RenameProfileDialog import RenameProfileDialog
 
 class CurveControlPanel(QFrame):
-    """曲线和配置文件管理的自包含视图组件。"""
+    """Self-contained view component for curve and profile management."""
     transient_status_signal = Signal(str)
 
     def __init__(self, profile_manager: ProfileManager, settings_manager: SettingsManager, state: AppState, parent=None):
@@ -158,7 +159,7 @@ class CurveControlPanel(QFrame):
                 new_name = dialog.new_name()
                 if new_name and new_name != old_name:
                     if self.state.get_profile(new_name):
-                        # 使用tr()函数
+                        # Uses tr()
                         QMessageBox.warning(self, tr("add_profile_error_title"), tr("add_profile_duplicate_name_error", name=new_name))
                     else:
                         self.profile_manager.rename_profile(old_name, new_name)
@@ -166,7 +167,7 @@ class CurveControlPanel(QFrame):
                 self.profile_manager.delete_profile(old_name)
 
     def _handle_add_profile_clicked(self):
-        # 使用tr()函数
+        # Uses tr()
         new_name, ok = QInputDialog.getText(self, tr("add_profile_title"), tr("add_profile_label"), QLineEdit.EchoMode.Normal, "")
         if ok and new_name:
             new_name = new_name.strip()

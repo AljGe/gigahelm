@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-中心化的Qt导入。
+Centralized Qt imports.
 
-此模块为所有Qt相关导入提供单点入口，
-便于在不同Qt绑定（例如PySide6）之间迁移，
-并通过集中化框架依赖来提高代码的内聚性。
+This module is the single entry point for all Qt-related imports,
+making it easy to migrate between Qt bindings (e.g. PySide6)
+and improving cohesion by centralizing the framework dependency.
 """
 
-# 将使用 PySide6
+# PySide6 is the binding in use
 from PySide6.QtCore import (
     QObject,
     QTimer,
@@ -47,7 +47,7 @@ from PySide6.QtGui import (
     QPixmap,
     QCursor,
     QIntValidator,
-    QPaintEvent, # 为paintEvent类型提示提供支持
+    QPaintEvent, # Type support for paintEvent signatures
     QRegion
 )
 from PySide6.QtWidgets import (
@@ -79,7 +79,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox
 )
 
-# 为SVG图标导入，这可能需要 `pip install PySide6-Addons`
+# SVG icon import; may require 'pip install PySide6-Addons'
 try:
     from PySide6.QtSvg import QSvgRenderer
 except ImportError:

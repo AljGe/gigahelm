@@ -1,12 +1,13 @@
-# -*- coding to: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-紧急风扇速度设置器。
+Emergency fan speed setter.
 
-这是一个完全独立的脚本，其唯一目的是在主应用程序崩溃时被调用，
-将风扇速度设置为一个安全值（80%）。
+Fully standalone script whose only purpose is to be invoked when the main
+application crashes, setting the fan speed to a safe value (80%).
 
-它通过进程隔离来避免主应用崩溃时可能出现的COM重入死锁问题。
-简化并统一了WMI调用方式，使其与主程序保持一致，更加健壮和简洁。
+Runs in a separate process to avoid the COM re-entrancy deadlock the main
+app can hit while crashing. Uses the same WMI call style as the main
+program - simpler, more robust, more concise.
 """
 
 import os
@@ -15,7 +16,7 @@ import math
 import traceback
 from datetime import datetime
 
-# 确保可以从项目根目录导入config模块
+# Make sure the config module is importable from the project root
 try:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config.settings import (
@@ -55,7 +56,7 @@ except ImportError:
     percent_to_raw = _inline_percent_to_raw
 
 def log_message(message: str):
-    """将消息记录到 emergency.log 文件中。"""
+    """Log a message to the emergency.log file."""
     log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'emergency.log')
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     try:
@@ -66,7 +67,7 @@ def log_message(message: str):
 
 def set_emergency_fan_speed():
     """
-    一个独立的函数，用于设置紧急风扇速度。
+    Standalone entry point that sets the emergency fan speed.
     """
     log_message("Emergency fan setter script started...")
     
@@ -89,15 +90,15 @@ def set_emergency_fan_speed():
             raise RuntimeError("Could not obtain WMI Set instance.")
         wmi_set_obj = instances[0]
 
-        # 1. 取得软件控制权
+        # 1. Take software fan control
         log_message("Taking software fan control...")
-        # 使用与主程序一致的高级wmi调用方式，简单且可靠
+        # Use the same high-level WMI call style as the main program: simple and reliable
         getattr(wmi_set_obj, SET_CUSTOM_FAN_STATUS)(Data=1.0)
         getattr(wmi_set_obj, SET_SUPER_QUIET)(Data=0.0)
         getattr(wmi_set_obj, SET_AUTO_FAN_STATUS)(Data=0.0)
         getattr(wmi_set_obj, SET_STEP_FAN_STATUS)(Data=0.0)
         
-        # 2. 设置80%的风扇速度
+        # 2. Set the fan speed to 80%
         raw_speed = float(percent_to_raw(80))
         log_message(f"Setting fan speed to {raw_speed} (80%)...")
         getattr(wmi_set_obj, SET_CUSTOM_FAN_SPEED)(Data=raw_speed)

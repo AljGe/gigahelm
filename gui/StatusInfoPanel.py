@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-状态信息面板QFrame - 一个自包含的视图组件。
-该面板通过直接连接到AppState的信号来响应式地更新其内容。
+Status info panel QFrame - a self-contained view component.
+The panel updates its content reactively by connecting directly to AppState signals.
 """
 from .qt import *
 from core.state import AppState, ProfileState
@@ -12,7 +12,7 @@ from config.settings import (
 )
 
 class StatusInfoPanel(QFrame):
-    """显示系统状态的自包含视图组件。"""
+    """Self-contained view component that displays system status."""
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
         self.state = state
@@ -24,7 +24,7 @@ class StatusInfoPanel(QFrame):
         self._update_all_displays()
 
     def _init_ui(self):
-        """创建并布局此面板的UI控件。"""
+        """Create and lay out this panel's UI widgets."""
         layout = QGridLayout(self)
         layout.setContentsMargins(10, 5, 10, 10); layout.setSpacing(10)
         
@@ -32,7 +32,7 @@ class StatusInfoPanel(QFrame):
         self.cpu_temp_value = QLabel()
         self.gpu_temp_label = QLabel(tr("gpu_temp_label"))
         self.gpu_temp_value = QLabel()
-        # UI标签保持业务含义，但内部将绑定到fan1/fan2
+        # UI labels keep their business meaning, but internally bind to fan1/fan2
         self.cpu_fan_rpm_label = QLabel(tr("cpu_fan_rpm_label"))
         self.cpu_fan_rpm_value = QLabel()
         self.gpu_fan_rpm_label = QLabel(tr("gpu_fan_rpm_label"))
@@ -52,12 +52,12 @@ class StatusInfoPanel(QFrame):
         layout.setColumnStretch(1, 1); layout.setColumnStretch(3, 1)
 
     def _connect_signals(self):
-        """将UI更新槽函数连接到AppState的特定信号。"""
+        """Connect the UI update slots to specific AppState signals."""
         self.state.cpu_temp_changed.connect(self._update_cpu_temp)
         self.state.gpu_temp_changed.connect(self._update_gpu_temp)
         self.state.gpu_asleep_changed.connect(self._on_gpu_asleep_changed)
         
-        # 将UI控件连接到新的、与硬件对齐的状态属性
+        # Wire UI widgets to the new, hardware-aligned state properties
         self.state.fan1_rpm_changed.connect(self._update_cpu_rpm) # Fan 1 -> CPU Fan UI
         self.state.fan2_rpm_changed.connect(self._update_gpu_rpm) # Fan 2 -> GPU Fan UI
 
@@ -72,10 +72,10 @@ class StatusInfoPanel(QFrame):
         self.state.battery_cycles_changed.connect(self._update_fan_and_battery_display)
 
     def _update_all_displays(self):
-        """一次性更新所有显示的值，用于初始化和语言切换。"""
+        """Update all displayed values in one pass; used for init and language switching."""
         self._update_cpu_temp(self.state.get_cpu_temp())
         self._update_gpu_temp(self.state.get_gpu_temp())
-        # 从新的状态属性获取初始值
+        # Get initial values from the new state properties
         self._update_cpu_rpm(self.state.get_fan1_rpm())
         self._update_gpu_rpm(self.state.get_fan2_rpm())
         self._update_fan_and_battery_display()
@@ -109,7 +109,7 @@ class StatusInfoPanel(QFrame):
 
     @Slot()
     def _update_fan_and_battery_display(self):
-        """更新风扇和电池的组合显示文本。"""
+        """Update the combined fan and battery display text."""
         fan_mode = self.state.get_applied_fan_mode()
         raw = self._optional_count(self.state.get_ec_fixed_fan_speed_raw())
         if fan_mode == FAN_MODE_AUTO:
@@ -140,7 +140,7 @@ class StatusInfoPanel(QFrame):
         ))
 
     def retranslate_ui(self):
-        """重新翻译面板中所有用户可见的文本。"""
+        """Retranslate all user-visible text in this panel."""
         self.cpu_temp_label.setText(tr("cpu_temp_label"))
         self.gpu_temp_label.setText(tr("gpu_temp_label"))
         self.cpu_fan_rpm_label.setText(tr("cpu_fan_rpm_label"))

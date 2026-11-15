@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-一个集中的、可靠的操作提示管理器，用于解决Qt默认ToolTip机制在复杂UI下可能失效的问题。
+A centralized, reliable tooltip manager that fixes Qt's default ToolTip mechanism being unreliable in complex UIs.
 """
 from .qt import QObject, QTimer, QToolTip, QEvent, QWidget, QCursor, Slot, QPoint
 from typing import Dict, Optional
@@ -9,19 +9,19 @@ from config.settings import TOOLTIP_DELAY_MS
 
 class TooltipManager(QObject):
     """
-    通过事件过滤器主动管理和显示工具提示的单例类。
+    Singleton class that proactively manages and shows tooltips via an event filter.
     """
     _instance: Optional['TooltipManager'] = None
 
     @staticmethod
     def get_instance() -> 'TooltipManager':
-        """获取TooltipManager的单例实例。"""
+        """Returns the TooltipManager singleton instance."""
         if TooltipManager._instance is None:
             TooltipManager._instance = TooltipManager()
         return TooltipManager._instance
 
     def __init__(self, parent: Optional[QObject] = None):
-        """初始化函数，私有以强制单例模式。"""
+        """Initializer, private to enforce the singleton pattern."""
         if TooltipManager._instance is not None:
             raise RuntimeError("TooltipManager is a singleton, use get_instance()")
         super().__init__(parent)
@@ -36,30 +36,30 @@ class TooltipManager(QObject):
 
     def register(self, widget: QWidget, text_key: str):
         """
-        为一个控件注册一个工具提示。
+        Registers a tooltip for a widget.
         
         Args:
-            widget: 需要显示工具提示的控件。
-            text_key: 用于在翻译文件中查找文本的键。
+            widget: The widget that should show the tooltip.
+            text_key: Key used to look up the text in the translation file.
         """
         if widget not in self._registered_widgets:
             self._registered_widgets[widget] = text_key
             widget.installEventFilter(self)
 
     def unregister(self, widget: QWidget):
-        """取消一个控件的工具提示注册。"""
+        """Unregisters a widget's tooltip."""
         if widget in self._registered_widgets:
             widget.removeEventFilter(self)
             del self._registered_widgets[widget]
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """
-        事件过滤器，用于捕获鼠标进入和离开事件以控制工具提示。
+        Event filter that captures mouse enter/leave events to control tooltips.
         """
         if not isinstance(watched, QWidget):
             return super().eventFilter(watched, event)
 
-        # 根据事件类型启动或停止计时器
+        # Start or stop the timer based on the event type
         if event.type() == QEvent.Type.Enter:
             self._current_widget = watched
             self._timer.start()
@@ -69,7 +69,7 @@ class TooltipManager(QObject):
                 self._current_widget = None
             QToolTip.hideText()
         elif event.type() == QEvent.Type.Hide:
-            # 如果控件被隐藏，也停止计时并隐藏提示
+            # If the widget was hidden, also stop the timer and hide the tooltip
             if watched == self._current_widget:
                 self._timer.stop()
                 self._current_widget = None
@@ -80,17 +80,17 @@ class TooltipManager(QObject):
     @Slot()
     def _show_tooltip(self):
         """
-        当计时器触发时，显示工具提示。
+        Shows the tooltip when the timer fires.
         """
         if self._current_widget and self._current_widget.isVisible() and self._current_widget.isEnabled():
             text_key = self._registered_widgets.get(self._current_widget)
             if text_key:
                 translated_text = tr(text_key)
                 if translated_text:
-                    # 增加偏移量以防止提示框在光标下闪烁，从而避免事件冲突
+                    # Offset the position so the tooltip does not flicker under the cursor, avoiding event conflicts
                     pos = QCursor.pos()
                     offset_pos = QPoint(pos.x() + 16, pos.y() + 16)
                     QToolTip.showText(offset_pos, translated_text, self._current_widget)
 
-# 创建全局单例实例，供应用各处使用
+# Create the global singleton instance for use across the app
 tooltip_manager = TooltipManager.get_instance()

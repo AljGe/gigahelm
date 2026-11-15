@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-处理应用的国际化(i18n)。
-从JSON文件加载语言字符串并提供翻译函数。
+Handles app i18n.
+Loads language strings from a JSON file and provides the translation function.
 """
 
 import json
@@ -11,12 +11,12 @@ from typing import Dict, Optional
 from config.settings import DEFAULT_LANGUAGE, KNOWN_LANGUAGES
 
 # ==============================================================================
-# 默认翻译字典
+# Default translation dictionaries
 # ==============================================================================
 
-# --- 默认英文翻译 ---
+# --- Default English translations ---
 DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
-    # 窗口和UI元素
+    # Window and UI elements
     "window_title": "Fan & Battery Control",
     "cpu_temp_label": "CPU Temp:",
     "gpu_temp_label": "GPU Temp:",
@@ -44,9 +44,9 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "rename_button": "Rename",
     "delete_button": "Delete",
 
-    # 工具提示
+    # Tooltips
     "curve_point_tooltip": "Temp: {temp}°C, Speed: {speed}%",
-    # 添加缺失的翻译键并提供有用的提示
+    # Added missing translation keys with helpful hints
     "canvas_tooltip": "Double-click empty space to add a point.\nRight-click a point to delete it.",
     "add_point_info": "Double-click empty space to add point.",
     "delete_point_info": "Right-click point to delete.",
@@ -62,7 +62,7 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "maximize_button_tooltip": "Maximize",
     "restore_button_tooltip": "Restore",
     
-    # 状态消息
+    # Status messages
     "initializing": "Initializing...",
     "paused": "Paused (Hidden)",
     "saving_config": "Config saved.",
@@ -74,7 +74,7 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "battery_display_format": "{policy} / {limit} / {health}% / {cycles}",
     "charge_readback_mismatch": "Charge limit readback {actual}% != requested {requested}%",
 
-    # 错误和对话框
+    # Errors and dialogs
     "wmi_init_error_title": "WMI Error",
     "wmi_init_error_msg": "Failed to initialize WMI.\nEnsure Gigabyte drivers are installed.\n\nError: {error}",
     "wmi_error": "WMI Error",
@@ -108,18 +108,18 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "cli_profile_and_policy_applied": "Activated '{profile}' and applied charge policy '{policy}'.",
     "cli_no_action": "No command action was provided.",
 
-    # 托盘菜单
+    # Tray menu
     "tray_menu_show_hide": "Show / Hide",
     "tray_menu_quit": "Quit",
 
-    # 语言显示名称
+    # Language display names
     "lang_display_name_en": "English",
     "lang_display_name_zh": "中文",
 }
 
-# --- 默认中文翻译 ---
+# --- Default Chinese translations ---
 DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
-    # 窗口和UI元素
+    # Window and UI elements
     "window_title": "风扇 & 电池控制",
     "cpu_temp_label": "CPU 温度:",
     "gpu_temp_label": "GPU 温度:",
@@ -147,9 +147,9 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "rename_button": "重命名",
     "delete_button": "删除",
 
-    # 工具提示
+    # Tooltips
     "curve_point_tooltip": "温度: {temp}°C, 速度: {speed}%",
-    # 添加缺失的翻译键并提供有用的提示
+    # Added missing translation keys with helpful hints
     "canvas_tooltip": "双击空白区域以添加点。\n右键单击一个点以删除它。",
     "add_point_info": "双击空白区域以添加点。",
     "delete_point_info": "右键单击点以删除。",
@@ -165,7 +165,7 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "maximize_button_tooltip": "最大化",
     "restore_button_tooltip": "还原",
     
-    # 状态消息
+    # Status messages
     "initializing": "正在初始化...",
     "paused": "已暂停 (最小化)",
     "saving_config": "配置已保存。",
@@ -177,7 +177,7 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "battery_display_format": "{policy} / {limit} / {health}% / {cycles}",
     "charge_readback_mismatch": "充电上限回读 {actual}% 与请求 {requested}% 不一致",
 
-    # 错误和对话框
+    # Errors and dialogs
     "wmi_init_error_title": "WMI 错误",
     "wmi_init_error_msg": "WMI 初始化失败。\n请确保已安装技嘉驱动程序。\n\n错误: {error}",
     "wmi_error": "WMI 错误",
@@ -211,17 +211,17 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "cli_profile_and_policy_applied": "已激活 '{profile}' 并应用充电策略 '{policy}'。",
     "cli_no_action": "未提供可执行的命令动作。",
 
-    # 托盘菜单
+    # Tray menu
     "tray_menu_show_hide": "显示 / 隐藏",
     "tray_menu_quit": "退出",
 
-    # 语言显示名称
+    # Language display names
     "lang_display_name_en": "English",
     "lang_display_name_zh": "中文",
 }
 
 # ==============================================================================
-# 核心翻译逻辑
+# Core translation logic
 # ==============================================================================
 
 _translations: Dict[str, Dict[str, str]] = {}
@@ -233,7 +233,7 @@ def load_translations(file_path: str):
     global _translations, _translations_loaded, _language_file_path
     _language_file_path = file_path
     
-    # 默认数据现在包含英文和中文
+    # Default data now includes both English and Chinese
     default_data = {
         "en": DEFAULT_ENGLISH_TRANSLATIONS.copy(),
         "zh": DEFAULT_CHINESE_TRANSLATIONS.copy()
@@ -253,7 +253,7 @@ def load_translations(file_path: str):
             dir_name = os.path.dirname(file_path)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
-            # 将包含两种语言的默认数据写入文件
+            # Write the default data containing both languages to the file
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(default_data, f, indent=4, ensure_ascii=False)
             loaded_data = default_data
@@ -261,11 +261,11 @@ def load_translations(file_path: str):
             print(f"Could not write default language file: {e}", file=sys.stderr)
             loaded_data = default_data
 
-    # 最终的翻译字典从硬编码的默认值开始，以确保健壮性
+    # The final translation dict starts from the hardcoded defaults for robustness
     final_translations = default_data.copy()
     for lang, trans in loaded_data.items():
         if isinstance(trans, dict):
-            # 使用英文作为基础，然后用加载的翻译覆盖
+            # Use English as the base, then override with the loaded translations
             merged = DEFAULT_ENGLISH_TRANSLATIONS.copy()
             merged.update(trans)
             final_translations[lang] = merged
@@ -281,11 +281,11 @@ def set_language(lang_code: str):
         _current_language = DEFAULT_LANGUAGE
 
 def tr(key: str, **kwargs) -> str:
-    # 首先尝试获取当前语言的翻译
+    # First try the current language's translation
     lang_dict = _translations.get(_current_language, {})
     translation = lang_dict.get(key)
     
-    # 如果当前语言没有，则回退到硬编码的英文
+    # Fall back to the hardcoded English if the current language lacks it
     if translation is None:
         translation = DEFAULT_ENGLISH_TRANSLATIONS.get(key, key)
         

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-用于与Windows任务计划程序交互以管理应用启动的函数。
-现在完全依赖于从PathManager传入的权威路径，确保了在任何模式下都能创建正确的任务。
+Functions for interacting with the Windows Task Scheduler to manage app startup.
+Now relies entirely on canonical paths passed in from PathManager, ensuring the
+correct task is created in every mode.
 """
 import os
 import sys
@@ -13,7 +14,7 @@ from core.path_manager import PathManager
 from .localization import tr
 
 def _run_schtasks(args: list[str]) -> Tuple[bool, str]:
-    """运行schtasks.exe命令的辅助函数，并正确处理输出编码。"""
+    """Helper that runs schtasks.exe commands and handles output encoding correctly."""
     if os.name != 'nt': return False, "Task Scheduler is only for Windows."
     command = ['schtasks'] + args
     try:
@@ -37,7 +38,7 @@ def _xml_escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def _get_default_task_xml_content() -> bytes:
-    """返回一个带有BOM前缀、utf-16-le编码的字节序列。"""
+    """Return the task XML as bytes, UTF-16-LE encoded with a BOM prefix."""
     xml_str = r'''<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -97,7 +98,8 @@ def _get_default_task_xml_content() -> bytes:
 
 def create_startup_task(paths: PathManager):
     """
-    使用外部XML模板和从PathManager获取的权威路径创建或更新Windows任务。
+    Create or update the Windows task using the external XML template and
+    canonical paths from PathManager.
     """
     xml_path = paths.task_template
 
@@ -117,13 +119,13 @@ def create_startup_task(paths: PathManager):
     except IOError as e:
         raise Exception(f"Failed to read task template file: {e}")
 
-    # 从PathManager获取所有路径信息，不再自行猜测
+    # Get all path info from PathManager instead of guessing
     if paths.is_running_as_script():
-        # 脚本模式
+        # Script mode
         command = sys.executable # python.exe
         arguments = f'"{paths.main_script_path}" {STARTUP_ARG_MINIMIZED}'
     else:
-        # 打包模式
+        # Packaged mode
         command = paths.executable_path # main.exe
         arguments = STARTUP_ARG_MINIMIZED
         
@@ -150,12 +152,12 @@ def create_startup_task(paths: PathManager):
             os.remove(temp_path)
 
 def delete_startup_task():
-    """从Windows任务计划程序中删除应用的启动任务。"""
+    """Delete the app's startup task from the Windows Task Scheduler."""
     success, output = _run_schtasks(['/Delete', '/TN', TASK_SCHEDULER_NAME, '/F'])
     if not success and "ERROR: The system cannot find the file specified." not in output:
         raise Exception(tr("task_scheduler_error_msg", command=f"Delete {TASK_SCHEDULER_NAME}", error=output))
 
 def is_startup_task_registered() -> bool:
-    """检查应用的启动任务是否已在任务计划程序中注册。"""
+    """Check whether the app's startup task is registered in the Task Scheduler."""
     success, _ = _run_schtasks(['/Query', '/TN', TASK_SCHEDULER_NAME])
     return success

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-OS级别的工具函数，主要用于Windows特定的操作。
-移除了不可靠的路径辅助函数，逻辑现在更集中和健壮。
+OS-level utility functions, mainly for Windows-specific operations.
+The unreliable path helpers were removed; the logic is now more centralized and robust.
 """
 
 import sys
@@ -12,7 +12,7 @@ import subprocess
 from .localization import tr
 
 def is_admin() -> bool:
-    """检查脚本是否在Windows上以管理员权限运行。"""
+    """Check whether the script is running with administrator rights on Windows."""
     if os.name == 'nt':
         try:
             return ctypes.windll.shell32.IsUserAnAdmin() != 0
@@ -24,7 +24,7 @@ def is_admin() -> bool:
 
 def run_as_admin(executable_path: str, base_dir: str):
     """
-    尝试在Windows上以管理员权限重新启动应用。
+    Try to relaunch the application with administrator rights on Windows.
     """
     if os.name != 'nt':
         return
@@ -39,7 +39,7 @@ def run_as_admin(executable_path: str, base_dir: str):
         is_script_mode = os.path.basename(executable_path).lower() in ('python.exe', 'pythonw.exe')
 
         if is_script_mode:
-            # 在脚本模式下，我们需要找到主脚本的路径
+            # In script mode we need to resolve the main script's path
             main_script_path = os.path.abspath(sys.argv[0])
             params = f'"{main_script_path}" {subprocess.list2cmdline(sys.argv[1:])}'
         else:
@@ -64,5 +64,5 @@ def run_as_admin(executable_path: str, base_dir: str):
         ctypes.windll.user32.MessageBoxW(0, final_error_msg, error_title, 0x10 | 0x1000)
         sys.exit(1)
 
-# 删除了 get_application_executable_path 和 get_application_script_path_for_task
-# 这两个函数是导致路径问题的根源，所有路径现在都应从 PathManager 获取。
+# Removed get_application_executable_path and get_application_script_path_for_task:
+# those two functions were the root cause of the path problems; all paths now come from PathManager.

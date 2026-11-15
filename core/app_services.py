@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-提供一个中心化的服务层(AppServices)，将后端逻辑与UI解耦。
-增加了优雅退出逻辑，在程序关闭时将风扇交还BIOS控制，并为崩溃安全机制记录当前风扇模式。
+Provides a centralized service layer (AppServices) that decouples backend logic from the UI.
+Adds graceful-shutdown logic: on exit, fan control is handed back to the BIOS, and the current fan mode is recorded for the crash-safety mechanism.
 """
 
 import os
@@ -16,6 +16,7 @@ from .auto_temp_controller import AutoTemperatureController
 from .state import AppState, ProfileState
 from .fan_duty import percent_to_raw
 from .fan_ramp import next_fan_percent
+from config.models import detect_model, get_preset
 from tools.localization import tr
 from config.settings import (
     FAN_MODE_BIOS, FAN_MODE_AUTO, FAN_MODE_CUSTOM,
@@ -33,7 +34,7 @@ CYCLE_WATCHDOG_MS = 8000
 FanTable = List[List[int]]
 
 class AppServices(QObject):
-    """中心化服务层，管理所有后端控制器并响应应用状态的变化。"""
+    """Centralized service layer managing all backend controllers and reacting to app-state changes."""
 
     def __init__(self, state: AppState, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -48,6 +49,8 @@ class AppServices(QObject):
         self._kick_armed = False
         self._spinning_down = False
         self._last_wmi_recovery_attempt: float = 0.0
+        self._model = detect_model()
+        self._fan_preset = get_preset(self._model)
         self._cycle_in_flight = False
         self._cycles_since_flag_reassert = 0
         self._pending_cycle: Optional[Dict[str, int]] = None
@@ -61,7 +64,7 @@ class AppServices(QObject):
         self.state.set_controller_status_message(tr("initializing"))
         self._is_ui_visible: bool = False
         
-        # 为崩溃安全机制定义状态文件路径
+        # State file path for the crash-safety mechanism
         self._last_mode_file_path = os.path.join(self.state.paths.base_dir, 'last_mode.state')
         
         self._connect_to_state_signals()
@@ -126,7 +129,7 @@ class AppServices(QObject):
         return True
 
     def shutdown(self):
-        """执行优雅关机程序。崩溃紧急锁存后不再把风扇交还 BIOS。"""
+        """Run the graceful shutdown sequence. After an emergency latch, fans are not handed back to the BIOS."""
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
@@ -147,7 +150,7 @@ class AppServices(QObject):
             self.wmi_interface.stop()
 
     def _configure_bios_fan_control(self):
-        """执行将风扇控制权交还给BIOS所需的WMI命令序列。"""
+        """Execute the WMI command sequence that hands fan control back to the BIOS."""
         self.wmi_interface.execute_method(SET_AUTO_FAN_STATUS, Data=1.0)
         self.wmi_interface.execute_method(SET_CUSTOM_FAN_STATUS, Data=0.0)
 
@@ -163,13 +166,13 @@ class AppServices(QObject):
         return False
 
     def note_resume(self):
-        """把连续的唤醒广播折叠成一次恢复。"""
+        """Collapse consecutive resume broadcasts into a single recovery."""
         if self._is_shutting_down:
             return
         self._resume_timer.start(1500)
 
     def _recover_wmi_if_due(self):
-        """Worker线程死亡时尝试重建WMI；30秒节流，失败时上报wmi_error。"""
+        """Rebuild WMI when the worker thread dies; throttled to once per 30 s, reports wmi_error on failure."""
         now = time.monotonic()
         if now - self._last_wmi_recovery_attempt < 30.0:
             return
@@ -188,7 +191,7 @@ class AppServices(QObject):
             self.state.set_controller_status_message(tr("wmi_error"))
 
     def recover_after_resume(self):
-        """重建 WMI。自动模式在恢复后立刻写一次风扇速度。"""
+        """Rebuild WMI. In auto mode, write a fan speed once immediately after resume."""
         if self._is_shutting_down:
             return
         self.controller_timer.stop()
@@ -206,7 +209,7 @@ class AppServices(QObject):
             self._perform_control_cycle()
 
     def _write_last_mode_state(self, mode: str):
-        """将当前风扇模式写入状态文件，用于崩溃恢复。"""
+        """Write the current fan mode to the state file for crash recovery."""
         try:
             with open(self._last_mode_file_path, 'w') as f:
                 f.write(mode)
@@ -215,7 +218,7 @@ class AppServices(QObject):
 
     @Slot(str)
     def set_fan_mode(self, mode: str):
-        """设置风扇控制模式。自动模式的第一次写入留给控制节拍。"""
+        """Set the fan control mode. In auto mode, the first write is left to the control tick."""
         if not self._current_profile:
             return
         try:
@@ -253,7 +256,7 @@ class AppServices(QObject):
 
     @Slot(int)
     def set_custom_fan_speed(self, speed: int):
-        """自定义滑块变化走同一条斜坡写入路径。"""
+        """Custom slider changes go through the same ramped write path."""
         if not self._current_profile or self.state.get_applied_fan_mode() != FAN_MODE_CUSTOM:
             return
         try:
@@ -280,7 +283,7 @@ class AppServices(QObject):
 
     @Slot(str)
     def set_battery_charge_policy(self, policy_name: str):
-        """设置电池充电策略。不写入策略码 1。"""
+        """Set the battery charge policy. Policy code 1 is never written."""
         if not self._current_profile:
             return
         try:
@@ -299,7 +302,7 @@ class AppServices(QObject):
 
     @Slot(int)
     def set_battery_charge_threshold(self, threshold: int, force_apply: bool = False):
-        """设置电池充电阈值，延迟回读，不阻塞 UI 线程。"""
+        """Set the battery charge threshold with a delayed readback, without blocking the UI thread."""
         if not force_apply and (not self._current_profile or self.state.get_applied_charge_policy() != CHARGE_POLICY_CUSTOM):
             return
         try:
@@ -328,8 +331,8 @@ class AppServices(QObject):
 
     @Slot()
     def _perform_control_cycle(self):
-        """心跳（非阻塞）：向 WMI worker 提交一次温度读取，回调里决定目标并异步写入。
-        H3：GUI 线程不再做任何阻塞的 WMI 调用。"""
+        """Heartbeat (non-blocking): submit one temperature read to the WMI worker; the callback picks the target and writes asynchronously.
+        H3: the GUI thread no longer makes any blocking WMI calls."""
         if self._is_shutting_down:
             return
         if not self.wmi_interface.is_running:
@@ -370,15 +373,19 @@ class AppServices(QObject):
             changed = percent != self.state.get_applied_fan_speed_percent()
             self._cycles_since_flag_reassert += 1
             if changed or self._cycles_since_flag_reassert >= FLAG_REASSERT_EVERY_CYCLES:
-                # H4：仅在占空比变化或 keepalive 到期时写 EC（reassert 同时重写占空比，双保险）。
+                # H4: write the EC only when the duty changed or the keepalive is due (the reassert also rewrites the duty as a belt-and-braces measure).
                 self._pending_cycle = {"target": target, "percent": percent}
-                duty_raw = float(percent_to_raw(percent))
+                duty_raw = float(percent_to_raw(
+                    percent,
+                    self._fan_preset["fan_raw_max"],
+                    self._fan_preset["fan_percent_min_spin"],
+                ))
                 self.wmi_interface.submit_async(
                     WMIInternalSignal.APPLY_FAN_CONTROL,
                     {"duty_raw": duty_raw, "reassert_flags": True},
                     on_done=self._on_cycle_applied,
                 )
-                return  # in_flight 保持 True，watchdog 继续看护
+                return  # keep in_flight True; the watchdog keeps guarding
             self._cycle_watchdog.stop()
             self._cycle_in_flight = False
             self.state.set_auto_fan_target_speed_percent(target)
@@ -399,7 +406,7 @@ class AppServices(QObject):
         self._cycles_since_flag_reassert = 0
         self.state.set_auto_fan_target_speed_percent(pending["target"])
         self.state.set_applied_fan_speed_percent(pending["percent"])
-        # 飞行中用户切到 BIOS：立即纠正刚写入的软件标志，避免残留 custom 控制。
+        # User switched to BIOS mid-flight: immediately correct the just-written software flags so no custom control lingers.
         if self.state.get_applied_fan_mode() == FAN_MODE_BIOS:
             try:
                 self._configure_bios_fan_control()
@@ -416,7 +423,7 @@ class AppServices(QObject):
         self.state.set_gpu_asleep(False)
 
     def _on_cycle_watchdog(self):
-        """周期超过 CYCLE_WATCHDOG_MS：worker 多半卡死在 COM 调用里。重建接口而不是冻结。"""
+        """Cycle exceeded CYCLE_WATCHDOG_MS: the worker is most likely stuck in a COM call. Rebuild the interface instead of freezing."""
         if self._is_shutting_down or not self._cycle_in_flight:
             return
         self._cycle_in_flight = False
@@ -430,7 +437,7 @@ class AppServices(QObject):
 
     @Slot()
     def on_gui_tick(self):
-        """由UI定时器触发，用于刷新UI显示的传感器数据。"""
+        """Triggered by the UI timer to refresh the sensor data shown in the UI."""
         if self._is_shutting_down:
             return
         if not self.wmi_interface.is_running:
@@ -445,7 +452,7 @@ class AppServices(QObject):
 
     @Slot()
     def perform_full_status_update(self):
-        """执行一次全局的、阻塞式的WMI查询。成功时返回传感器字典。"""
+        """Run one global, blocking WMI query. Returns the sensor dict on success."""
         try:
             sensor_data = self.wmi_interface.get_all_sensors_sync()
             self._update_state_from_sensor_data(sensor_data)
@@ -456,7 +463,7 @@ class AppServices(QObject):
             return None
 
     def _update_state_from_sensor_data(self, sensor_data: dict):
-        """使用反射机制，并正确处理特殊映射，用从WMI获取的数据更新AppState。"""
+        """Update AppState from WMI data via reflection, handling the special mappings correctly."""
         if not sensor_data: return
         
         key_map = {
@@ -474,7 +481,7 @@ class AppServices(QObject):
                 getattr(self.state, setter_name)(value)
 
     def set_ui_visibility(self, is_visible: bool):
-        """当UI可见性变化时调用。"""
+        """Called when UI visibility changes."""
         self._is_ui_visible = is_visible
         if is_visible:
             self.perform_full_status_update()

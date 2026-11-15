@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-应用的自定义标题栏小部件。
+Custom title bar widget for the application.
 """
 
 from .qt import (
@@ -17,7 +17,7 @@ from .qt import (
 from tools.localization import tr, get_available_languages, get_current_language
 from core.settings_manager import SettingsManager
 
-# SVG图标数据
+# SVG icon data
 SVG_MINIMIZE = """
 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">
   <path stroke="{color}" stroke-width="2" d="M2 6h8"/>
@@ -42,7 +42,7 @@ SVG_CLOSE = """
 """
 
 class CustomTitleBar(QWidget):
-    """带有图标、标题、状态、语言选择器和窗口控件的自定义标题栏。"""
+    """Custom title bar with icon, title, status, language selector, and window controls."""
     
     def __init__(self, settings_manager: SettingsManager, parent: Optional[QMainWindow] = None):
         super().__init__(parent)
