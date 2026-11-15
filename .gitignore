@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PyInstaller
+*.spec
+build/
+dist/
+hooks/
+
+# Virtual environments
+venv/
+venv_std/
+.venv/
+
+# IDE / Editor specific
+.idea/
+.vscode/
+
+# Runtime state (machine-local; never commit)
+control_config.json
+last_mode.state
+languages.json
+task_template.xml
+*.log

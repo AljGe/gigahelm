@@ -1,0 +1,87 @@
+# -*- coding: utf-8 -*-
+"""
+中心化的Qt导入。
+
+此模块为所有Qt相关导入提供单点入口，
+便于在不同Qt绑定（例如PySide6）之间迁移，
+并通过集中化框架依赖来提高代码的内聚性。
+"""
+
+# 将使用 PySide6
+from PySide6.QtCore import (
+    QObject,
+    QTimer,
+    QCoreApplication,
+    QAbstractNativeEventFilter,
+    Qt,
+    QLocale,
+    QEvent,
+    QByteArray,
+    Signal,
+    Slot,
+    QSize,
+    QPoint,
+    QRectF,
+    QPointF,
+    QRunnable,
+    QThreadPool,
+    Property,
+    QBuffer,
+    QIODevice,
+    QRect
+)
+from PySide6.QtGui import (
+    QIcon,
+    QAction,
+    QPainter,
+    QColor,
+    QPen,
+    QBrush,
+    QFont,
+    QPolygonF,
+    QCloseEvent,
+    QShowEvent,
+    QHideEvent,
+    QMouseEvent,
+    QResizeEvent,
+    QPixmap,
+    QCursor,
+    QIntValidator,
+    QPaintEvent, # 为paintEvent类型提示提供支持
+    QRegion
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QFrame,
+    QSystemTrayIcon,
+    QMenu,
+    QStyle,
+    QGridLayout,
+    QLabel,
+    QRadioButton,
+    QButtonGroup,
+    QSlider,
+    QSpacerItem,
+    QSizePolicy,
+    QPushButton,
+    QCheckBox,
+    QInputDialog,
+    QLineEdit,
+    QComboBox,
+    QToolTip,
+    QStackedLayout,
+    QDialog,
+    QDialogButtonBox
+)
+
+# 为SVG图标导入，这可能需要 `pip install PySide6-Addons`
+try:
+    from PySide6.QtSvg import QSvgRenderer
+except ImportError:
+    print("Warning: PySide6.QtSvg module not found. SVG icons will be unavailable. Run 'pip install PySide6-Addons'.")
+    QSvgRenderer = None
