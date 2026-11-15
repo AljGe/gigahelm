@@ -47,5 +47,33 @@ class FanTargetTests(unittest.TestCase):
         self.assertTrue(0 < t < 40)
 
 
+class ControllerHysteresisTests(unittest.TestCase):
+    """Temperature jitter around a curve knee must not churn the target."""
+
+    def setUp(self):
+        from core.auto_temp_controller import AutoTemperatureController
+        self.ctl = AutoTemperatureController()
+        self.ctl.update_curves(SILENT_CPU, DEFAULT_GPU)
+
+    def test_downward_churn_blocked_during_jitter(self):
+        # Park at 86 C (steep [85,59]-[90,77] region), then jitter below the anchor:
+        # hysteresis must block every down-step, so the target never moves.
+        parked = self.ctl.theoretical_target(86.0, -1.0)
+        targets = [self.ctl.theoretical_target(t, -1.0) for t in (84, 85, 84, 85, 84)]
+        self.assertEqual(targets, [parked] * 5)
+
+    def test_drop_beyond_hysteresis_releases(self):
+        self.ctl.theoretical_target(63.0, -1.0)
+        held = self.ctl.theoretical_target(62.0, -1.0)
+        # 3 C drop < hysteresis 5: still held
+        self.assertEqual(self.ctl.theoretical_target(60.0, -1.0), held)
+        # 8 C drop below the anchor: released to the cooler curve value
+        self.assertLess(self.ctl.theoretical_target(55.0, -1.0), held)
+
+    def test_rise_applies_immediately(self):
+        low = self.ctl.theoretical_target(62.0, -1.0)
+        self.assertGreater(self.ctl.theoretical_target(80.0, -1.0), low)
+
+
 if __name__ == "__main__":
     unittest.main()
