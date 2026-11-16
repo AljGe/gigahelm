@@ -181,6 +181,11 @@ WATCHDOG_HEARTBEAT_STALE_S: float = 45.0
 LAST_MODE_FILENAME: str = "last_mode.state"
 HEARTBEAT_FILENAME: str = "heartbeat.state"
 FAN_STALL_CYCLES: int = 4
+# Sustained-high-temperature balloon: fires once after this many consecutive
+# cycles at/above HOT_ALERT_TEMP_C, re-arms below HOT_ALERT_RESET_C.
+HOT_ALERT_TEMP_C: float = 95.0
+HOT_ALERT_RESET_C: float = 90.0
+HOT_ALERT_SUSTAINED_CYCLES: int = 8
 STARTUP_ARG_MINIMIZED: str = "--minimized"
 _APP_GUID: str = "{17e0cc04-cddb-4b9b-adcc-5faa4872e054}"
 MUTEX_NAME: str = f"Global\\{APP_INTERNAL_NAME}_Mutex_{_APP_GUID}"

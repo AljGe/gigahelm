@@ -29,6 +29,7 @@ from config.settings import (
     SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_STATUS, SET_CHARGE_STOP,
     DEFAULT_TARGET_HYSTERESIS_PERCENT, FAN_STALL_CYCLES,
     NVML_FF_IDLE_W, NVML_FF_K_C_PER_W, NVML_FF_MAX_BOOST_C,
+    HOT_ALERT_TEMP_C, HOT_ALERT_RESET_C, HOT_ALERT_SUSTAINED_CYCLES,
     LAST_MODE_FILENAME, HEARTBEAT_FILENAME, WMIInternalSignal
 )
 
@@ -81,6 +82,9 @@ class AppServices(QObject):
         self._charge_watch_timer.start(CHARGE_WATCH_INTERVAL_MS)
         self._charge_verify_in_flight = False
         self._last_charge_write_ms = 0.0
+        # Sustained-hot balloon state (see _update_hot_alert).
+        self._hot_alert_cycles = 0
+        self._hot_alert_active = False
 
         self.state.set_controller_status_message(tr("initializing"))
         self._is_ui_visible: bool = False
@@ -624,6 +628,7 @@ class AppServices(QObject):
                 self._spinning_down,
             )
             self._update_fan_stall(percent, fan1_rpm, fan2_rpm, gpu_asleep)
+            self._update_hot_alert(cpu_temp, gpu_temp, gpu_asleep)
 
             changed = percent != self.state.get_applied_fan_speed_percent()
             self._cycles_since_flag_reassert += 1
@@ -645,6 +650,29 @@ class AppServices(QObject):
             self._cycle_watchdog.stop()
             self._cycle_in_flight = False
             self._on_cycle_failed(e)
+
+    def _update_hot_alert(self, cpu_temp: float, gpu_temp: float, gpu_asleep: bool):
+        """Balloon once after HOT_ALERT_SUSTAINED_CYCLES consecutive cycles at
+        or above HOT_ALERT_TEMP_C (ignoring a sleeping dGPU's error value);
+        re-arms once every readable sensor is below HOT_ALERT_RESET_C, so the
+        next excursion alerts again instead of being suppressed forever."""
+        sensors = [cpu_temp]
+        if not gpu_asleep:
+            sensors.append(gpu_temp)
+        readable = [t for t in sensors
+                    if t is not None and t != TEMP_READ_ERROR_VALUE]
+        hot = any(t >= HOT_ALERT_TEMP_C for t in readable)
+        if hot:
+            self._hot_alert_cycles += 1
+            if self._hot_alert_cycles >= HOT_ALERT_SUSTAINED_CYCLES and not self._hot_alert_active:
+                self._hot_alert_active = True
+                detail = " / ".join(f"{t:.0f} °C" for t in readable)
+                self.state.set_controller_status_message(
+                    tr("sustained_hot_alert", temps=detail))
+            return
+        self._hot_alert_cycles = 0
+        if not readable or all(t < HOT_ALERT_RESET_C for t in readable):
+            self._hot_alert_active = False
 
     def _update_fan_stall(self, percent: int, fan1_rpm: Any, fan2_rpm: Any, gpu_asleep: bool):
         duty_raw = percent_to_raw(percent)
