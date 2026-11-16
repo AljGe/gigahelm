@@ -6,7 +6,7 @@ $taskName = "Gigahelm Startup Task"
 $legacyTaskName = "FanBatteryControl Startup Task"
 $install = "C:\Tools\Gigahelm"
 $legacyInstall = "C:\Tools\GFBC"
-$sourceRoot = "C:\Users\geier\AppData\Local\Temp\gfb-center"
+$sourceRoot = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $sourceRoot "dist\Gigahelm"
 $exeName = "Gigahelm.exe"
 $python = Join-Path $sourceRoot ".venv\Scripts\python.exe"
@@ -142,6 +142,32 @@ if ($LASTEXITCODE -ne 0) { Write-Log "schtasks-failed"; exit 10 }
 
 Write-Log "start-task"
 Start-ScheduledTask -TaskName $taskName
+# Deploy race (ROADMAP #6): the previous instance may still be dying and
+# holding the single-instance mutex, so the new instance exits silently and
+# the deploy *looks* successful. Poll for the mutex; retry the start once.
+& $python -c @"
+import sys, time
+sys.path.insert(0, r'$sourceRoot')
+from tools.bios_watchdog import _instance_running
+deadline = time.time() + 20
+while time.time() < deadline:
+    if _instance_running():
+        sys.exit(0)
+    time.sleep(1)
+sys.exit(1)
+"@
+if ($LASTEXITCODE -ne 0) {
+    Write-Log "start-retry"
+    Start-ScheduledTask -TaskName $taskName
+    Start-Sleep -Seconds 8
+    & $python -c @"
+import sys
+sys.path.insert(0, r'$sourceRoot')
+from tools.bios_watchdog import _instance_running
+sys.exit(0 if _instance_running() else 1)
+"@
+    if ($LASTEXITCODE -ne 0) { Write-Log "start-verify-failed"; exit 11 }
+}
 Start-Sleep -Seconds 8
 
 Write-Log "probe"

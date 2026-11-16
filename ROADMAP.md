@@ -68,15 +68,14 @@ effort. Ordered by expected value.
   First-run values only; never overwrite user edits.
 - **Effort:** S.
 
-## 6. Deploy race: poll the mutex after Start-Task
+## 6. Deploy race: poll the mutex after Start-Task — **shipped**
 
-- **Why (review minor):** the deploy script starts the scheduled task while
-  the previous instance may still be dying and holding the global mutex —
-  the new instance then exits silently and the deploy *looks* successful.
-  Workaround today: rerun `schtasks /Run`.
-- **How:** after `Start-ScheduledTask`, poll for the mutex up to N seconds
-  and issue one retry `/Run` before declaring success.
-- **Effort:** S.
+- ~~the deploy script starts the scheduled task while the previous instance
+  may still be dying and holding the global mutex — the new instance then
+  exits silently and the deploy *looks* successful.~~
+- **Done:** `tools/deploy_gfb.ps1` polls the single-instance mutex for 20 s
+  after `Start-ScheduledTask` and retries the task start once before failing
+  the deploy (the EC probe alone fails late and without recovery).
 
 ## 7. RPM byte-swap heuristic documentation
 
