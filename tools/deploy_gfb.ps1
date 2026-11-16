@@ -70,8 +70,23 @@ foreach ($proc in $procs) {
         continue
     }
     if (-not $path) {
-        Write-Log "unproven-main-exe pid=$($proc.ProcessId)"
-        exit 5
+        # Teardown race: a just-stopped instance lingers briefly in Win32_Process
+        # with NULL path/commandline. Re-query before declaring it unproven.
+        $resolved = $false
+        for ($try = 0; $try -lt 10; $try++) {
+            Start-Sleep -Milliseconds 500
+            $again = Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ProcessId)" -ErrorAction SilentlyContinue
+            if (-not $again) { $resolved = $true; break }
+            $p2 = [string]$again.ExecutablePath
+            $c2 = [string]$again.CommandLine
+            if (($p2 -like "*$needle*") -or ($c2 -like "*$needle*")) {
+                Write-Log "kill-pid=$($proc.ProcessId)"
+                Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+                $resolved = $true; break
+            }
+            if ($p2) { Write-Log "unproven-main-exe pid=$($proc.ProcessId) path=$p2"; exit 5 }
+        }
+        if (-not $resolved) { Write-Log "unproven-main-exe pid=$($proc.ProcessId)"; exit 5 }
     }
 }
 Start-Sleep -Seconds 1
