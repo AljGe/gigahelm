@@ -33,6 +33,9 @@ class LightweightCurveCanvas(QWidget):
     """基于QPainter的交互式风扇曲线编辑画布。"""
 
     transient_status_signal = Signal(str, int)
+    # (curve_type, before_points, after_points) fired once per user edit
+    # (drag release, add, delete); after is what was written to the profile.
+    edit_committed = Signal(str, list, list)
 
     def __init__(
         self,
@@ -56,6 +59,7 @@ class LightweightCurveCanvas(QWidget):
         self.active_curve_type: CurveType = 'cpu'
         self._appearance_settings: Dict[str, Any] = {}
         self._dragging_point_index: Optional[int] = None
+        self._drag_before_data: Optional[FanTable] = None
         self._hovered_point_index: Optional[int] = None
         self._plot_area = QRectF()
         self._margins = {'left': 52, 'top': 16, 'right': 16, 'bottom': 34}
@@ -523,6 +527,15 @@ class LightweightCurveCanvas(QWidget):
         self.profile_manager.set_curve_data(curve_type, data)
         self.transient_status_signal.emit(tr("saving_config"), 2000)
 
+    def _commit_edit(self, curve_type: CurveType, before: Optional[FanTable], after: FanTable):
+        """Persist one user edit and announce it for undo history; no-ops
+        (no history entry, no write) when nothing actually changed."""
+        if before is not None and [list(p) for p in before] == [list(p) for p in after]:
+            return
+        if before is not None:
+            self.edit_committed.emit(curve_type, [list(p) for p in before], [list(p) for p in after])
+        self._update_curve_in_state(curve_type, after)
+
     # ----------------------------------------------------------- interaction ---
     def mousePressEvent(self, event: QMouseEvent):
         pos = event.position()
@@ -530,6 +543,7 @@ class LightweightCurveCanvas(QWidget):
         point_info = self._get_point_at_event(pos)
         if event.button() == Qt.MouseButton.LeftButton and point_info:
             self._dragging_point_index = point_info[1]
+            self._drag_before_data = [list(p) for p in self.get_curve_data(self.active_curve_type)]
         elif event.button() == Qt.MouseButton.RightButton and point_info:
             self._delete_point(*point_info)
 
@@ -554,7 +568,8 @@ class LightweightCurveCanvas(QWidget):
             self._dragging_point_index = None
             data = self.get_curve_data(self.active_curve_type)
             data.sort(key=lambda p: p[0])
-            self._update_curve_in_state(self.active_curve_type, data)
+            before, self._drag_before_data = self._drag_before_data, None
+            self._commit_edit(self.active_curve_type, before, data)
             self.update()
 
     def _get_point_at_event(self, pos: QPointF) -> Optional[Tuple[CurveType, int]]:
@@ -568,7 +583,8 @@ class LightweightCurveCanvas(QWidget):
 
     def _add_point(self, pos: QPointF):
         temp, speed = self._widget_to_data_coords(pos)
-        data = self.get_curve_data(self.active_curve_type)
+        before = [list(p) for p in self.get_curve_data(self.active_curve_type)]
+        data = [list(p) for p in before]
         data.append([int(round(temp)), int(round(speed))])
         data.sort(key=lambda p: p[0])
         for i in range(1, len(data)):
@@ -576,15 +592,16 @@ class LightweightCurveCanvas(QWidget):
                 data[i][1] = data[i-1][1]
 
         setattr(self, f"_{self.active_curve_type}_interpolator", None)
-        self._update_curve_in_state(self.active_curve_type, data)
+        self._commit_edit(self.active_curve_type, before, data)
         self.update()
 
     def _delete_point(self, curve_type: CurveType, index: int):
-        data = self.get_curve_data(curve_type)
+        data = [list(p) for p in self.get_curve_data(curve_type)]
         if len(data) > MIN_CURVE_POINTS:
+            before = data
             del data[index]
             setattr(self, f"_{curve_type}_interpolator", None)
-            self._update_curve_in_state(curve_type, data)
+            self._commit_edit(curve_type, before, data)
             self.update()
 
     def _drag_point(self, pos: QPointF):
