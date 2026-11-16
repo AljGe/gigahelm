@@ -176,13 +176,69 @@ class MainWindow(QMainWindow):
         tray_menu = QMenu(self)
         show_hide_action = QAction(tr("tray_menu_show_hide"), self)
         show_hide_action.triggered.connect(self.toggle_window_visibility)
+        self._profiles_menu = QMenu(tr("tray_menu_profiles"), self)
+        self._charge_menu = QMenu(tr("tray_menu_charge_limit"), self)
         quit_action = QAction(tr("tray_menu_quit"), self)
         quit_action.triggered.connect(self._request_quit)
-        tray_menu.addAction(show_hide_action); tray_menu.addSeparator(); tray_menu.addAction(quit_action)
+        tray_menu.addAction(show_hide_action)
+        tray_menu.addMenu(self._profiles_menu)
+        tray_menu.addMenu(self._charge_menu)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        self.state.profiles_list_changed.connect(lambda *_: self._rebuild_tray_profiles_menu())
+        self.state.applied_charge_policy_changed.connect(lambda *_: self._mark_tray_charge_actions())
+        self.state.applied_charge_threshold_changed.connect(lambda *_: self._mark_tray_charge_actions())
+        self._build_tray_charge_menu()
+        self._rebuild_tray_profiles_menu()
         if not self.start_minimized:
             self.tray_icon.show()
+
+    def _rebuild_tray_profiles_menu(self):
+        """One checkable action per profile; activation reuses the CLI payload
+        path (validation + save + balloon notification for free)."""
+        if not hasattr(self, "_profiles_menu"):
+            return
+        self._profiles_menu.clear()
+        active = self.state.get_active_profile_name()
+        for name in self.state.get_profile_names():
+            action = QAction(name, self._profiles_menu)
+            action.setCheckable(True)
+            action.setChecked(name == active)
+            action.triggered.connect(
+                lambda _checked=False, name=name: self.execute_cli_payload(
+                    {"profile": name, "show_mode": "notify"}))
+            self._profiles_menu.addAction(action)
+
+    def _build_tray_charge_menu(self):
+        self._charge_actions = []
+        entries = [(tr("mode_bios"), CHARGE_POLICY_BIOS, None)]
+        for threshold in (60, 70, 80, 90, 100):
+            entries.append((f"{threshold} %", CHARGE_POLICY_CUSTOM, threshold))
+        for label, policy, threshold in entries:
+            action = QAction(label, self._charge_menu)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, policy=policy, threshold=threshold: self._apply_tray_charge(policy, threshold))
+            self._charge_menu.addAction(action)
+            self._charge_actions.append((action, policy, threshold))
+
+    def _apply_tray_charge(self, policy: str, threshold: Optional[int]):
+        payload = {"charge_policy": policy, "show_mode": "notify"}
+        if threshold is not None:
+            payload["charge_threshold"] = threshold
+        self.execute_cli_payload(payload)
+
+    def _mark_tray_charge_actions(self):
+        if not hasattr(self, "_charge_actions"):
+            return
+        applied_policy = self.state.get_applied_charge_policy()
+        applied_threshold = self.state.get_applied_charge_threshold()
+        for action, policy, threshold in self._charge_actions:
+            action.setChecked(
+                policy == applied_policy
+                and (threshold is None or threshold == applied_threshold))
 
     def _on_theme_changed(self):
         """A palette switch: restyle the window, then refresh palette-driven widgets."""

@@ -2,12 +2,13 @@
 """
 Emergency fan speed setter.
 
-Fully standalone script whose only purpose is to be invoked when the main
-application crashes, setting the fan speed to a safe value (80%).
+Sets the fan speed to a safe value (80%). The crash handler in main.py calls
+this in-process via sys.excepthook; it can also be run standalone
+(`python emergency_fan_setter.py`, admin required) and therefore keeps its
+own dependency fallbacks instead of importing the app stack.
 
-Runs in a separate process to avoid the COM re-entrancy deadlock the main
-app can hit while crashing. Uses the same WMI call style as the main
-program - simpler, more robust, more concise.
+Uses the same WMI call style as the main program - simpler, more robust,
+more concise.
 """
 
 import os
