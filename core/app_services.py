@@ -70,6 +70,7 @@ class AppServices(QObject):
             'fan1_rpm': state.set_fan1_rpm, 'fan2_rpm': state.set_fan2_rpm,
             'ec_fixed_fan_speed_raw': state.set_ec_fixed_fan_speed_raw,
             'battery_health': state.set_battery_health, 'battery_cycles': state.set_battery_cycles,
+            'battery_percent': state.set_battery_percent,
             'charge_policy': state.set_applied_charge_policy,
             'charge_threshold': state.set_applied_charge_threshold,
         }

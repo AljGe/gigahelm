@@ -44,6 +44,7 @@ class BaseControlPanel(QFrame):
         self.slider_debounce_timer = QTimer(self)
         self.slider_debounce_timer.setSingleShot(True)
         self.slider_debounce_timer.setInterval(300)
+        self._pending_slider_value: Optional[int] = None
 
         self._init_ui()
         self._connect_signals()
@@ -138,16 +139,23 @@ class BaseControlPanel(QFrame):
         self.value_label.blockSignals(True)
         self.value_label.setValue(value)
         self.value_label.blockSignals(False)
+        # Capture the user's intent: an applied-value pushback may rewrite the
+        # slider position before the debounce fires (EC readback of the old
+        # value), and the late commit must not persist that rollback.
+        self._pending_slider_value = value
         self.slider_debounce_timer.start()
 
     @Slot()
     def _commit_slider_value(self) -> None:
         self.slider_debounce_timer.stop()
-        self._commit_value(self.slider.value())
+        value = self._pending_slider_value
+        self._pending_slider_value = None
+        self._commit_value(value if value is not None else self.slider.value())
 
     @Slot(int)
     def _commit_label_value(self, value: int) -> None:
         self.slider_debounce_timer.stop()
+        self._pending_slider_value = None
         min_val, max_val = self.config["slider_range"]
         self._commit_value(max(min_val, min(max_val, value)))
 

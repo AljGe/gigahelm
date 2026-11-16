@@ -121,3 +121,33 @@ def set_thread_priority_above_normal() -> bool:
             _THREAD_PRIORITY_ABOVE_NORMAL))
     except Exception:
         return False
+
+
+class _SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("Reserved1", ctypes.c_ubyte),
+        ("BatteryLifeTime", ctypes.c_ulong),
+        ("BatteryFullLifeTime", ctypes.c_ulong),
+    ]
+
+
+def get_battery_percent() -> int:
+    """Windows-reported charge percentage (0-100), or -1 when unknown.
+
+    GetSystemPowerStatus needs no WMI/COM, so it is safe on any worker
+    thread. 255 (no battery / unreadable) maps to -1 like every other
+    optional sensor value.
+    """
+    if os.name != 'nt':
+        return -1
+    try:
+        status = _SYSTEM_POWER_STATUS()
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+            return -1
+        percent = status.BatteryLifePercent
+        return -1 if percent == 255 else int(percent)
+    except Exception:
+        return -1
