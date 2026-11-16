@@ -138,6 +138,9 @@ TEMP_READ_ERROR_VALUE: float = -1.0
 RPM_READ_ERROR_VALUE: int = -1
 CHARGE_POLICY_READ_ERROR_VALUE: int = -1
 CHARGE_THRESHOLD_READ_ERROR_VALUE: int = -1
+# How often the charge watch re-reads the EC's applied charge policy/threshold
+# and rewrites it when firmware drifted (sleep, EC reset, battery pull).
+CHARGE_WATCH_INTERVAL_MS: int = 60_000
 INIT_APPLIED_PERCENTAGE: int = -1
 
 # ==============================================================================

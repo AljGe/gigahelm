@@ -32,6 +32,8 @@ class ProfileManager(QObject):
         self.state.set_language(config_data.get("language", "en"))
         self.state.set_theme_mode(config_data.get("theme_mode", DEFAULT_THEME_MODE))
         self.state.set_start_on_boot(config_data.get("start_on_boot", False))
+        self.state.set_profile_on_ac(config_data.get("profile_on_ac", ""))
+        self.state.set_profile_on_battery(config_data.get("profile_on_battery", ""))
         self.state.window_geometry = config_data.get("window_geometry")
 
         profiles_data = config_data.get("profiles", {})
@@ -59,6 +61,8 @@ class ProfileManager(QObject):
             "language": self.state.get_language(),
             "theme_mode": self.state.get_theme_mode(),
             "start_on_boot": self.state.get_start_on_boot(),
+            "profile_on_ac": self.state.get_profile_on_ac(),
+            "profile_on_battery": self.state.get_profile_on_battery(),
             "active_profile_name": self.state.get_active_profile_name(),
             "window_geometry": self.state.window_geometry,
             "profile_order": self.state.profile_order, # Preserve the order
