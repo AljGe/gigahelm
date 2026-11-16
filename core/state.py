@@ -35,6 +35,13 @@ class ProfileState(QObject):
     def get_value(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
+    def set_value(self, key: str, value: Any):
+        """Generic setter for profile keys without a typed property (behavior
+        flags like gpu_power_feedforward); announces via appearance_changed."""
+        if self._data.get(key) != value:
+            self._data[key] = value
+            self.appearance_changed.emit()
+
     def to_dict(self) -> Dict[str, Any]:
         return copy.deepcopy(self._data)
 
@@ -100,6 +107,7 @@ class AppState(QObject):
     language_changed = Signal(str)
     theme_mode_changed = Signal(str)
     start_on_boot_changed = Signal(bool)
+    notifications_enabled_changed = Signal(bool)
     profile_on_ac_changed = Signal(str)
     profile_on_battery_changed = Signal(str)
     active_profile_changed = Signal(ProfileState)
@@ -129,6 +137,9 @@ class AppState(QObject):
         self._language: str = "en"
         self._theme_mode: str = DEFAULT_THEME_MODE
         self._start_on_boot: bool = False
+        # Balloon confirmations for profile/charge actions; fault + thermal
+        # alerts intentionally ignore this flag.
+        self._notifications_enabled: bool = True
         # Optional profile names to switch to on AC attach / battery power
         # ("" = feature off for that source).
         self._profile_on_ac: str = ""
@@ -175,6 +186,12 @@ class AppState(QObject):
     def get_start_on_boot(self) -> bool: return self._start_on_boot
     def set_start_on_boot(self, value: bool): self._set_value('_start_on_boot', value, self.start_on_boot_changed)
     start_on_boot = Property(bool, get_start_on_boot, set_start_on_boot, notify=start_on_boot_changed) # type: ignore
+
+    # Balloon confirmations for profile/charge actions; fault + thermal
+    # alerts intentionally ignore this flag.
+    def get_notifications_enabled(self) -> bool: return self._notifications_enabled
+    def set_notifications_enabled(self, value: bool): self._set_value('_notifications_enabled', value, self.notifications_enabled_changed)
+    notifications_enabled = Property(bool, get_notifications_enabled, set_notifications_enabled, notify=notifications_enabled_changed) # type: ignore
 
     def get_profile_on_ac(self) -> str: return self._profile_on_ac
     def set_profile_on_ac(self, value: str): self._set_value('_profile_on_ac', value or "", self.profile_on_ac_changed)
