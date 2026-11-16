@@ -53,6 +53,9 @@ class FakeWMI:
         self.running = True
         return True
 
+    def set_nvml_poll_enabled(self, enabled: bool) -> None:
+        pass
+
     def submit_async(self, signal, params=None, on_done=None):
         if signal == "_get_charge_status":
             self.charge_reads += 1

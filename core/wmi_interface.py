@@ -47,6 +47,7 @@ from config.settings import (
     SET_CHARGE_POLICY, SET_CHARGE_STOP,
     WMI_REQUEST_TIMEOUT_S, WMI_ASYNC_RESULT_TIMEOUT_S,
     TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
+    NVML_FF_IDLE_W, NVML_FF_RESUME_TEMP_C, NVML_IDLE_SKIP_W,
     WMIInternalSignal
 )
 
@@ -79,6 +80,15 @@ class WMIWorker(threading.Thread):
         # NVML (optional): handle lives on this worker thread only.
         self._nvml_handle = None
         self._nvml_ok: bool = False
+        # Sleep guard: when False (or when the EC reports the dGPU asleep)
+        # the sensor sweep makes NO NVML calls, so polling can never keep
+        # the GPU out of D3cold. AppServices mirrors the active profile's
+        # gpu_power_feedforward flag into this every cycle.
+        self._nvml_poll_enabled: bool = True
+        # Idle skip: an idle-floor reading pauses polling until genuine load
+        # (EC GPU temp) or a sleep/wake cycle re-arms it.
+        self._nvml_last_power_w: Optional[float] = None
+        self._nvml_idle_paused: bool = False
         self.initialization_error: Optional[Exception] = None
         self.initialization_complete = threading.Event()
         self._stop_event = threading.Event()
@@ -378,16 +388,42 @@ class WMIWorker(threading.Thread):
         gpu_asleep = gpu_temp == TEMP_READ_ERROR_VALUE and bool(raw_gpu) and all(self._to_int(v) == 0 for v in raw_gpu)
         return {'cpu_temp': cpu_temp, 'gpu_temp': gpu_temp, 'gpu_asleep': gpu_asleep}
 
+    def _poll_nvml_if_allowed(self, data: Dict[str, Any]) -> None:
+        """Attach gpu_power_w/gpu_util when NVML may be polled.
+
+        Measured on the reference machine: any NVML client activity pins an
+        idle dGPU at P0 and keeps it out of D3cold. Three gates prevent
+        that: the profile flag (_nvml_poll_enabled), the EC sleep heuristic,
+        and the idle skip (stop reading once power sits at/below the
+        feed-forward floor; resume on real load or a sleep/wake cycle)."""
+        if not self._nvml_ok or not self._nvml_poll_enabled:
+            return
+        if data.get('gpu_asleep', False):
+            # Powered down: never touch NVML; re-arm so the first reading
+            # after wake is taken fresh.
+            self._nvml_last_power_w = None
+            self._nvml_idle_paused = False
+            return
+        gpu_temp = data.get('gpu_temp', TEMP_READ_ERROR_VALUE)
+        if self._nvml_idle_paused:
+            if gpu_temp == TEMP_READ_ERROR_VALUE or gpu_temp < NVML_FF_RESUME_TEMP_C:
+                return  # still idle and cool: keep the GPU alone
+            self._nvml_idle_paused = False  # genuine load: resume reading
+        power_w, gpu_util = self._read_nvml_gpu()
+        self._nvml_last_power_w = power_w
+        # 31-34 W pinned idle is above the 30 W offset floor, so the skip
+        # threshold is its own constant (see NVML_IDLE_SKIP_W).
+        self._nvml_idle_paused = power_w is not None and power_w <= NVML_IDLE_SKIP_W
+        if power_w is not None:
+            data['gpu_power_w'] = power_w
+        if gpu_util is not None:
+            data['gpu_util'] = gpu_util
+
     def _get_core_sensors(self) -> Dict[str, Any]:
         data = self._get_temperatures()
         data['fan1_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM1))
         data['fan2_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM2))
-        if self._nvml_ok:
-            power_w, gpu_util = self._read_nvml_gpu()
-            if power_w is not None:
-                data['gpu_power_w'] = power_w
-            if gpu_util is not None:
-                data['gpu_util'] = gpu_util
+        self._poll_nvml_if_allowed(data)
         return data
 
     def _get_charge_status(self) -> Dict[str, Any]:
@@ -473,6 +509,13 @@ class WMIInterface(QObject):
                 return False
             self._is_running = True
             return True
+
+    def set_nvml_poll_enabled(self, enabled: bool) -> None:
+        """Mirror the active profile's feed-forward flag onto the worker;
+        plain bool attribute write, read at the top of each sensor sweep."""
+        worker = self._worker_thread
+        if worker is not None:
+            worker._nvml_poll_enabled = bool(enabled)
 
     def stop(self, join_timeout: float = WMI_REQUEST_TIMEOUT_S):
         with self._lock:

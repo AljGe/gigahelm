@@ -590,6 +590,11 @@ class AppServices(QObject):
             fan1_rpm = data.get("fan1_rpm", RPM_READ_ERROR_VALUE)
             fan2_rpm = data.get("fan2_rpm", RPM_READ_ERROR_VALUE)
             gpu_power_w = data.get("gpu_power_w")
+            # Keep the worker's NVML gate in sync with the active profile's
+            # feed-forward flag: profiles with it disabled make no NVML
+            # calls at all, so the dGPU is free to enter D3cold.
+            self.wmi_interface.set_nvml_poll_enabled(
+                bool(self._current_profile.get_value("gpu_power_feedforward", True)))
             if self._is_ui_visible:
                 self.state.set_cpu_temp(cpu_temp)
                 self.state.set_gpu_temp(gpu_temp)
