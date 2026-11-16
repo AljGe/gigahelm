@@ -47,7 +47,7 @@ from config.settings import (
     SET_CHARGE_POLICY, SET_CHARGE_STOP,
     WMI_REQUEST_TIMEOUT_S, WMI_ASYNC_RESULT_TIMEOUT_S,
     TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
-    NVML_FF_IDLE_W, NVML_FF_RESUME_TEMP_C,
+    NVML_FF_IDLE_W, NVML_FF_RESUME_TEMP_C, NVML_IDLE_SKIP_W,
     WMIInternalSignal
 )
 
@@ -411,7 +411,9 @@ class WMIWorker(threading.Thread):
             self._nvml_idle_paused = False  # genuine load: resume reading
         power_w, gpu_util = self._read_nvml_gpu()
         self._nvml_last_power_w = power_w
-        self._nvml_idle_paused = power_w is not None and power_w <= NVML_FF_IDLE_W
+        # 31-34 W pinned idle is above the 30 W offset floor, so the skip
+        # threshold is its own constant (see NVML_IDLE_SKIP_W).
+        self._nvml_idle_paused = power_w is not None and power_w <= NVML_IDLE_SKIP_W
         if power_w is not None:
             data['gpu_power_w'] = power_w
         if gpu_util is not None:
