@@ -38,6 +38,12 @@ class SettingsManager(QObject):
             self.state.set_theme_mode(mode)
             self.profile_manager.save_config()
 
+    def set_notifications_enabled(self, enabled: bool):
+        """Persist the action-balloon preference."""
+        if self.state.get_notifications_enabled() != enabled:
+            self.state.set_notifications_enabled(enabled)
+            self.profile_manager.save_config()
+
     def set_start_on_boot(self, enabled: bool):
         """Enable or disable the start-on-boot task."""
         if os.name != 'nt': return

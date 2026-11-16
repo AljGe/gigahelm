@@ -55,6 +55,9 @@ Gigahelm is a lightweight yet powerful utility designed for Gigabyte laptops, of
         *   **Curve Canvas:** The interactive graph for editing fan curves. Drag points to adjust the temperature-to-fan-speed mapping; the curve cascades to stay logical. Double-click empty space to add a point, right-click a point to delete it.
     *   **Theme switch:** The button next to the language selector cycles System → Dark → Light, and the choice is remembered.
     *   **Start on Boot:** The checkbox in the footer starts the application with Windows (via Task Scheduler).
+    *   **Action notifications:** The footer checkbox turns the profile/charge balloon confirmations on or off; fault and thermal alerts always show.
+    *   **UI refresh:** The footer combo sets how often the dashboard repaints temperatures and fan speeds (250 ms – 2 s, stored per profile).
+    *   **GPU power feed-forward:** The checkbox on the fan card (Auto mode) enables the NVML power-based early fan response; stored per profile.
     *   **Language Selector:** Change the application's display language on the fly.
 4.  **Tray Icon:** The application minimizes to the system tray to run unobtrusively in the background.
     *   **Left-Click/Double-Click:** Show or hide the main window.
