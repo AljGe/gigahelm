@@ -24,7 +24,7 @@ THEME_MODES = (THEME_MODE_SYSTEM, THEME_MODE_DARK, THEME_MODE_LIGHT)
 DEFAULT_THEME_MODE: str = THEME_MODE_SYSTEM
 
 # --- 版本 (页脚显示) ---
-APP_VERSION: str = "2.1.0"
+APP_VERSION: str = "2.2.0"
 
 # --- 核心状态常量 ---
 FAN_MODE_BIOS = "bios"
