@@ -126,6 +126,7 @@ class Dashboard(QWidget):
         self.state.cpu_temp_changed.connect(self._on_cpu_temp_changed)
         self.state.gpu_temp_changed.connect(self._on_gpu_temp_changed)
         self.state.gpu_asleep_changed.connect(self._on_gpu_asleep_changed)
+        self.state.gpu_util_changed.connect(lambda *_: self._update_gpu_card_footer())
         self.state.fan1_rpm_changed.connect(self._on_fan1_rpm_changed)
         self.state.fan2_rpm_changed.connect(self._on_fan2_rpm_changed)
 
@@ -181,7 +182,7 @@ class Dashboard(QWidget):
     def _on_gpu_asleep_changed(self, asleep: bool) -> None:
         self._update_temp_card(self.gpu_card, self.state.get_gpu_temp(), asleep=asleep)
         if not asleep:
-            self._on_fan2_rpm_changed(self.state.get_fan2_rpm())
+            self._update_gpu_card_footer()
 
     def _update_temp_card(self, card: StatCard, temp: float, asleep: bool = False) -> None:
         if asleep:
@@ -217,7 +218,22 @@ class Dashboard(QWidget):
     def _on_fan2_rpm_changed(self, rpm: int) -> None:
         if self.state.get_gpu_asleep():
             return
-        self._update_fan_rpm(self.gpu_card, rpm)
+        self._update_gpu_card_footer()
+
+    def _update_gpu_card_footer(self) -> None:
+        """GPU fan RPM plus NVML utilization when known (sleep guard may
+        pause polling -> -1 shows as RPM-only)."""
+        if self.state.get_gpu_asleep():
+            return  # _update_temp_card owns the asleep footer
+        rpm = self.state.get_fan2_rpm()
+        if rpm == RPM_READ_ERROR_VALUE:
+            self.gpu_card.set_footer(tr("rpm_error"))
+            return
+        footer = f"{rpm}{tr('rpm_unit')}"
+        util = self.state.get_gpu_util()
+        if util >= 0:
+            footer += f" · {util}{tr('percent_unit')}"
+        self.gpu_card.set_footer(footer)
 
     def _update_fan_rpm(self, card: StatCard, rpm: int) -> None:
         if rpm == RPM_READ_ERROR_VALUE:

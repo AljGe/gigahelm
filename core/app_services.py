@@ -590,6 +590,7 @@ class AppServices(QObject):
             fan1_rpm = data.get("fan1_rpm", RPM_READ_ERROR_VALUE)
             fan2_rpm = data.get("fan2_rpm", RPM_READ_ERROR_VALUE)
             gpu_power_w = data.get("gpu_power_w")
+            gpu_util = data.get("gpu_util")
             # Keep the worker's NVML gate in sync with the active profile's
             # feed-forward flag: profiles with it disabled make no NVML
             # calls at all, so the dGPU is free to enter D3cold.
@@ -601,6 +602,9 @@ class AppServices(QObject):
                 self.state.set_fan1_rpm(fan1_rpm)
                 self.state.set_fan2_rpm(fan2_rpm)
             self.state.set_gpu_asleep(gpu_asleep)
+            # Utilization is display-only; keep it fresh while hidden so the
+            # dashboard is current on show (footer dedupes identical text).
+            self.state.set_gpu_util(gpu_util if gpu_util is not None else -1)
 
             if mode == FAN_MODE_CUSTOM:
                 base_target = 0
