@@ -89,6 +89,49 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "alpha_inactive": DEFAULT_ALPHA_INACTIVE,
 }
 
+# --- 出厂配置方案 ---
+# The shipped profile set (this machine's bench-tuned curves). A config with
+# no profiles (fresh install, deleted config) regenerates these, so an
+# accidental reset loses nothing that a restart can't restore.
+AC_CPU_FAN_TABLE: List[List[int]] = [
+    [50, 0], [55, 0], [60, 0], [65, 0], [68, 15], [70, 25], [72, 35],
+    [74, 45], [76, 60], [78, 75], [80, 85], [82, 88], [84, 90], [88, 95], [95, 95],
+]
+AC_GPU_FAN_TABLE: List[List[int]] = [
+    [40, 0], [55, 15], [65, 25], [73, 35], [78, 53], [83, 74], [89, 99],
+]
+BATT_CPU_FAN_TABLE: List[List[int]] = [
+    [50, 0], [55, 0], [60, 20], [63, 35], [66, 45], [70, 55], [73, 65],
+    [75, 70], [77, 75], [80, 80], [83, 85], [86, 90], [90, 95], [95, 95],
+]
+
+
+def _default_profile(**overrides: Any) -> Dict[str, Any]:
+    import copy
+    profile = copy.deepcopy(DEFAULT_PROFILE_SETTINGS)
+    # overrides may hold module-level table lists shared between profiles;
+    # copy them so profiles never alias the same mutable table.
+    profile.update(copy.deepcopy(overrides))
+    return profile
+
+
+DEFAULT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "Tuned AC": _default_profile(
+        cpu_fan_table=AC_CPU_FAN_TABLE,
+        gpu_fan_table=AC_GPU_FAN_TABLE,
+        fan_mode="auto",
+        battery_charge_policy=CHARGE_POLICY_BIOS,
+        battery_charge_threshold=80,
+    ),
+    "Tuned Battery": _default_profile(
+        cpu_fan_table=BATT_CPU_FAN_TABLE,
+        gpu_fan_table=AC_GPU_FAN_TABLE,
+        fan_mode="auto",
+        battery_charge_policy=CHARGE_POLICY_CUSTOM,
+        battery_charge_threshold=80,
+    ),
+}
+
 # ==============================================================================
 # WMI 配置
 # ==============================================================================

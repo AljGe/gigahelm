@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, List
 
 from gui.qt import QObject, Signal
 from .state import AppState, ProfileState
-from config.settings import DEFAULT_PROFILE_SETTINGS, DEFAULT_THEME_MODE
+from config.settings import DEFAULT_PROFILE_SETTINGS, DEFAULT_PROFILES, DEFAULT_THEME_MODE
 from tools.localization import tr
 
 class ProfileManager(QObject):
@@ -39,7 +39,7 @@ class ProfileManager(QObject):
 
         profiles_data = config_data.get("profiles", {})
         if not profiles_data:
-            profiles_data = {"Config 1": copy.deepcopy(DEFAULT_PROFILE_SETTINGS)}
+            profiles_data = copy.deepcopy(DEFAULT_PROFILES)
         
         # Load or generate the profile order
         profile_order = config_data.get("profile_order", sorted(profiles_data.keys()))
@@ -51,9 +51,9 @@ class ProfileManager(QObject):
 
         self.state.load_profiles_from_config(profiles_data, profile_order)
         
-        active_profile_name = config_data.get("active_profile_name", "Config 1")
+        active_profile_name = config_data.get("active_profile_name", next(iter(DEFAULT_PROFILES)))
         if active_profile_name not in self.state.get_profile_names():
-            active_profile_name = self.state.get_profile_names()[0] if self.state.get_profile_names() else "Config 1"
+            active_profile_name = self.state.get_profile_names()[0] if self.state.get_profile_names() else next(iter(DEFAULT_PROFILES))
         self.state.set_active_profile_name(active_profile_name)
 
     def save_config(self):
