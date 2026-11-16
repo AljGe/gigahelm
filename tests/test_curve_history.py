@@ -143,7 +143,15 @@ class NvmlSleepGuardTests(unittest.TestCase):
         worker, calls = make_worker(60, 0, 80.0)
         worker._get_core_sensors()
         worker._get_core_sensors()
-        self.assertEqual(len(calls), 2)  # above the idle floor: every cycle
+        self.assertEqual(len(calls), 2)  # above the skip floor: every cycle
+
+    def test_pinned_idle_reading_still_pauses(self):
+        # pinned idle draws 31-34 W on this machine - above the 30 W offset
+        # floor, but the skip threshold is 40 W so it must still pause
+        worker, calls = make_worker(60, 0, 34.0)
+        worker._get_core_sensors()
+        worker._get_core_sensors()
+        self.assertEqual(len(calls), 1)
 
     def test_sleep_cycle_rearms_after_idle_pause(self):
         worker, calls = make_worker(60, 0, 15.0)
