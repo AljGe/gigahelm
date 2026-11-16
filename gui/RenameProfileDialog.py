@@ -55,5 +55,9 @@ class RenameProfileDialog(QDialog):
 
     def accept(self):
         if self.result_action != "delete":
+            if not self.new_name():
+                QMessageBox.warning(
+                    self, tr("add_profile_error_title"), tr("add_profile_empty_name_error"))
+                return
             self.result_action = "rename"
         super().accept()

@@ -56,10 +56,10 @@ class _WindowsResumeFilter(QAbstractNativeEventFilter):
 
 class _SYSTEM_POWER_STATUS(ctypes.Structure):
     _fields_ = [
-        ("ACLineStatus", ctypes.c_byte),
-        ("BatteryFlag", ctypes.c_byte),
-        ("BatteryLifePercent", ctypes.c_byte),
-        ("Reserved1", ctypes.c_byte),
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("Reserved1", ctypes.c_ubyte),
         ("BatteryLifeTime", ctypes.c_ulong),
         ("BatteryFullLifeTime", ctypes.c_ulong),
     ]
@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self._last_status_notified: Optional[str] = None
         self._is_quitting: bool = False
         self._is_showing_transient_status: bool = False
+        self._tray_close_hint_shown: bool = False
         self.status_clear_timer = QTimer(self)
         self.status_clear_timer.setSingleShot(True)
         
@@ -131,7 +132,7 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         self.setWindowTitle(tr("window_title"))
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setMinimumSize(1080, 680)
+        self.setMinimumSize(1080, 728)
         main_container = QWidget()
         main_container.setObjectName("mainContainer")
         self.setCentralWidget(main_container)
@@ -211,10 +212,12 @@ class MainWindow(QMainWindow):
                     {"profile": name, "show_mode": "notify"}))
             self._profiles_menu.addAction(action)
 
+    _TRAY_CHARGE_THRESHOLDS = (60, 70, 80, 90, 100)
+
     def _build_tray_charge_menu(self):
         self._charge_actions = []
         entries = [(tr("mode_bios"), CHARGE_POLICY_BIOS, None)]
-        for threshold in (60, 70, 80, 90, 100):
+        for threshold in self._TRAY_CHARGE_THRESHOLDS:
             entries.append((tr("tray_charge_percent", n=threshold), CHARGE_POLICY_CUSTOM, threshold))
         for label, policy, threshold in entries:
             action = QAction(label, self._charge_menu)
@@ -235,10 +238,35 @@ class MainWindow(QMainWindow):
             return
         applied_policy = self.state.get_applied_charge_policy()
         applied_threshold = self.state.get_applied_charge_threshold()
+        if (applied_policy == CHARGE_POLICY_CUSTOM
+                and 0 < applied_threshold
+                and applied_threshold not in self._TRAY_CHARGE_THRESHOLDS):
+            self._ensure_tray_charge_threshold_action(applied_threshold)
         for action, policy, threshold in self._charge_actions:
             action.setChecked(
                 policy == applied_policy
                 and (threshold is None or threshold == applied_threshold))
+
+    def _ensure_tray_charge_threshold_action(self, threshold: int):
+        """Off-list applied limit (e.g. 55): insert a matching entry so the
+        submenu always shows which threshold is live."""
+        if any(th == threshold for _action, _policy, th in self._charge_actions):
+            return
+        action = QAction(tr("tray_charge_percent", n=threshold), self._charge_menu)
+        action.setCheckable(True)
+        action.triggered.connect(
+            lambda _checked=False, threshold=threshold: self._apply_tray_charge(
+                CHARGE_POLICY_CUSTOM, threshold))
+        insert_index = 1 + sum(
+            1 for _a, policy, th in self._charge_actions
+            if policy == CHARGE_POLICY_CUSTOM and th is not None and th < threshold)
+        before_action = (self._charge_actions[insert_index][0]
+                         if insert_index < len(self._charge_actions) else None)
+        if before_action is not None:
+            self._charge_menu.insertAction(before_action, action)
+        else:
+            self._charge_menu.addAction(action)
+        self._charge_actions.insert(insert_index, (action, CHARGE_POLICY_CUSTOM, threshold))
 
     def _on_theme_changed(self):
         """A palette switch: restyle the window, then refresh palette-driven widgets."""
@@ -524,7 +552,12 @@ class MainWindow(QMainWindow):
 
     def toggle_window_visibility(self, force_show: bool = False):
         if force_show or not self.isVisible() or self.isMinimized():
-            self.showNormal(); self.activateWindow(); self.raise_()
+            # show() (not showNormal()): a window hidden while maximized must
+            # come back maximized, and a minimized one must just un-minimize.
+            if self.isMinimized():
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+            self.show()
+            self.activateWindow(); self.raise_()
         else: self.hide()
 
     def _request_quit(self):
@@ -549,6 +582,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         if self._is_quitting: event.accept()
         elif self.tray_icon and self.tray_icon.isVisible():
+            # First close is invisible to a new user: say the app keeps
+            # running (once per process, not persisted).
+            if not self._tray_close_hint_shown:
+                self._tray_close_hint_shown = True
+                self.tray_icon.showMessage(
+                    tr("tray_still_running_title"), tr("tray_still_running_msg"),
+                    QSystemTrayIcon.MessageIcon.Information, 4000)
             self.hide(); event.ignore()
         else:
             self._request_quit(); event.accept()

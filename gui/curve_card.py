@@ -14,6 +14,7 @@ from .qt import (
     QInputDialog, QLineEdit, QMessageBox, QDialog, QSizePolicy,
     QContextMenuEvent, QPoint, QShortcut, QKeySequence, Qt, Signal, Slot,
 )
+from .flow_layout import FlowLayout
 from .segmented_control import SegmentedControl
 from .lightweight_curve_canvas import LightweightCurveCanvas
 from .curve_history import CurveEditHistory
@@ -113,9 +114,8 @@ class CurveCard(QFrame):
 
         layout.addLayout(header)
 
-        chips_row = QHBoxLayout()
+        chips_row = FlowLayout(spacing=6)  # adopted by layout.addLayout below
         chips_row.setContentsMargins(0, 0, 0, 0)
-        chips_row.setSpacing(6)
         self.profile_chips_layout = chips_row
         layout.addLayout(chips_row)
 
@@ -212,7 +212,6 @@ class CurveCard(QFrame):
             self.profile_chips_layout.addWidget(chip)
 
         self.profile_chips_layout.addWidget(self.add_profile_button)
-        self.profile_chips_layout.addStretch(1)
 
     def _show_profile_menu(self, chip: _ProfileChip, global_pos: QPoint) -> None:
         name = chip.profile_name
@@ -238,6 +237,16 @@ class CurveCard(QFrame):
         active_profile = self.profile_manager.get_active_profile()
         target_profile = self.state.get_profile(name)
         if not active_profile or not target_profile:
+            return
+        # Overwriting erases the target profile's saved settings; ask first.
+        confirm = QMessageBox.question(
+            self,
+            tr("profile_overwrite_confirm_title"),
+            tr("profile_overwrite_confirm_msg", name=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
             return
         target_profile.from_dict(active_profile.to_dict())
         self.profile_manager.save_config()
