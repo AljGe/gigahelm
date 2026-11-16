@@ -116,6 +116,8 @@ class AppState(QObject):
     cpu_temp_changed = Signal(float)
     gpu_temp_changed = Signal(float)
     gpu_asleep_changed = Signal(bool)
+    # NVML GPU utilization percent, -1 = unknown (asleep / poll paused).
+    gpu_util_changed = Signal(int)
     # 重命名以匹配硬件实现，消除业务逻辑层的转化
     fan1_rpm_changed = Signal(int)
     fan2_rpm_changed = Signal(int)
@@ -153,6 +155,7 @@ class AppState(QObject):
         self._cpu_temp: float = 0.0
         self._gpu_temp: float = 0.0
         self._gpu_asleep: bool = False
+        self._gpu_util: int = -1
         # 重命名
         self._fan1_rpm: int = 0
         self._fan2_rpm: int = 0
@@ -229,6 +232,10 @@ class AppState(QObject):
     def get_gpu_asleep(self) -> bool: return self._gpu_asleep
     def set_gpu_asleep(self, value: bool): self._set_value('_gpu_asleep', value, self.gpu_asleep_changed)
     gpu_asleep = Property(bool, get_gpu_asleep, set_gpu_asleep, notify=gpu_asleep_changed) # type: ignore
+
+    def get_gpu_util(self) -> int: return self._gpu_util
+    def set_gpu_util(self, value: int): self._set_value('_gpu_util', int(value), self.gpu_util_changed)
+    gpu_util = Property(int, get_gpu_util, set_gpu_util, notify=gpu_util_changed) # type: ignore
 
     # 重命名
     def get_fan1_rpm(self) -> int: return self._fan1_rpm
