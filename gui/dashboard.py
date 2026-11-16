@@ -10,7 +10,7 @@ All values are pushed in from `AppState`; no business logic lives here.
 from typing import Optional
 
 from .qt import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QSizePolicy, Signal, Slot,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QComboBox, QSizePolicy, Signal, Slot,
 )
 from .stat_card import StatCard
 from .FanControlPanel import FanControlPanel
@@ -36,6 +36,7 @@ class Dashboard(QWidget):
     """The whole page: hero cards, control column, curve card, footer."""
 
     transient_status = Signal(str, int)
+    gui_update_interval_selected = Signal(int)
 
     def __init__(
         self,
@@ -106,6 +107,19 @@ class Dashboard(QWidget):
         self.start_on_boot_checkbox = QCheckBox(tr("start_on_boot_label"), self)
         tooltip_manager.register(self.start_on_boot_checkbox, "start_on_boot_tooltip")
         footer.addWidget(self.start_on_boot_checkbox)
+
+        self.notifications_checkbox = QCheckBox(tr("notifications_label"), self)
+        tooltip_manager.register(self.notifications_checkbox, "notifications_tooltip")
+        footer.addWidget(self.notifications_checkbox)
+
+        self.ui_refresh_label = QLabel(tr("ui_refresh_label"), self)
+        self.ui_refresh_label.setObjectName("statFooter")
+        footer.addWidget(self.ui_refresh_label)
+        self.ui_refresh_combo = QComboBox(self)
+        for ms in (250, 500, 1000, 2000):
+            self.ui_refresh_combo.addItem(f"{ms} ms", ms)
+        tooltip_manager.register(self.ui_refresh_combo, "ui_refresh_tooltip")
+        footer.addWidget(self.ui_refresh_combo)
         layout.addLayout(footer)
 
     def _connect_signals(self) -> None:
@@ -128,6 +142,12 @@ class Dashboard(QWidget):
         self.state.start_on_boot_changed.connect(self._on_start_on_boot_changed)
         self.start_on_boot_checkbox.toggled.connect(self.settings_manager.set_start_on_boot)
 
+        self.state.notifications_enabled_changed.connect(self._on_notifications_enabled_changed)
+        self.notifications_checkbox.toggled.connect(self.settings_manager.set_notifications_enabled)
+
+        self.state.active_profile_changed.connect(lambda *_: self._refresh_ui_refresh_combo())
+        self.ui_refresh_combo.activated.connect(self._on_ui_refresh_selected)
+
         self.curve_card.transient_status.connect(self.transient_status.emit)
 
     # --------------------------------------------------------------- cards ---
@@ -141,6 +161,8 @@ class Dashboard(QWidget):
         self._update_battery_value()
         self._update_battery_footer()
         self._on_start_on_boot_changed(self.state.get_start_on_boot())
+        self._on_notifications_enabled_changed(self.state.get_notifications_enabled())
+        self._refresh_ui_refresh_combo()
 
     def _apply_theme_to_cards(self) -> None:
         palette = self.theme.palette()
@@ -256,6 +278,29 @@ class Dashboard(QWidget):
         finally:
             self.start_on_boot_checkbox.blockSignals(False)
 
+    @Slot(bool)
+    def _on_notifications_enabled_changed(self, enabled: bool) -> None:
+        self.notifications_checkbox.blockSignals(True)
+        try:
+            self.notifications_checkbox.setChecked(enabled)
+        finally:
+            self.notifications_checkbox.blockSignals(False)
+
+    def _refresh_ui_refresh_combo(self) -> None:
+        profile = self.state.get_active_profile()
+        interval = int(profile.get_value("gui_update_interval_ms", 1000)) if profile else 1000
+        index = self.ui_refresh_combo.findData(interval)
+        self.ui_refresh_combo.blockSignals(True)
+        self.ui_refresh_combo.setCurrentIndex(index if index >= 0 else self.ui_refresh_combo.findData(1000))
+        self.ui_refresh_combo.blockSignals(False)
+
+    @Slot(int)
+    def _on_ui_refresh_selected(self, index: int) -> None:
+        ms = self.ui_refresh_combo.itemData(index)
+        if ms:
+            self.profile_manager.set_profile_value("gui_update_interval_ms", int(ms))
+            self.gui_update_interval_selected.emit(int(ms))
+
     # --------------------------------------------------------------- i18n ----
     def retranslate_ui(self) -> None:
         self.cpu_card.set_caption_text(tr("stat_cpu_caption"))
@@ -263,6 +308,8 @@ class Dashboard(QWidget):
         self.fan_card.set_caption_text(tr("stat_fan_caption"))
         self.battery_card.set_caption_text(tr("stat_battery_caption"))
         self.start_on_boot_checkbox.setText(tr("start_on_boot_label"))
+        self.notifications_checkbox.setText(tr("notifications_label"))
+        self.ui_refresh_label.setText(tr("ui_refresh_label"))
         self.brand_label.setText(f"{APP_NAME} {APP_VERSION}")
         self.fan_control.retranslate_ui()
         self.battery_control.retranslate_ui()
