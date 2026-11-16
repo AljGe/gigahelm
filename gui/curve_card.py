@@ -12,10 +12,11 @@ from typing import Callable, List, Optional
 from .qt import (
     QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMenu,
     QInputDialog, QLineEdit, QMessageBox, QDialog, QSizePolicy,
-    QContextMenuEvent, QPoint, Signal, Slot,
+    QContextMenuEvent, QPoint, QShortcut, QKeySequence, Qt, Signal, Slot,
 )
 from .segmented_control import SegmentedControl
 from .lightweight_curve_canvas import LightweightCurveCanvas
+from .curve_history import CurveEditHistory
 from .RenameProfileDialog import RenameProfileDialog
 from .tooltip_manager import tooltip_manager
 from .theme import ThemeManager
@@ -93,6 +94,18 @@ class CurveCard(QFrame):
         tooltip_manager.register(self.curve_switch, "curve_shared_duty_tooltip")
         header.addWidget(self.curve_switch)
 
+        self.undo_curve_button = QPushButton("\u21b6", self)
+        self.undo_curve_button.setObjectName("resetCurveButton")
+        self.undo_curve_button.setToolTip(tr("undo_curve_tooltip"))
+        self.undo_curve_button.setEnabled(False)
+        header.addWidget(self.undo_curve_button)
+
+        self.redo_curve_button = QPushButton("\u21b7", self)
+        self.redo_curve_button.setObjectName("resetCurveButton")
+        self.redo_curve_button.setToolTip(tr("redo_curve_tooltip"))
+        self.redo_curve_button.setEnabled(False)
+        header.addWidget(self.redo_curve_button)
+
         self.reset_curve_button = QPushButton(tr("reset_curve_button"), self)
         self.reset_curve_button.setObjectName("resetCurveButton")
         tooltip_manager.register(self.reset_curve_button, "reset_curve_tooltip")
@@ -116,15 +129,65 @@ class CurveCard(QFrame):
 
     def _connect_signals(self) -> None:
         self.curve_switch.valueChanged.connect(self.settings_manager.set_active_curve_type)
-        self.reset_curve_button.clicked.connect(self.profile_manager.reset_active_curve)
+        self.reset_curve_button.clicked.connect(self._on_reset_clicked)
+        self.undo_curve_button.clicked.connect(self._undo_curve_edit)
+        self.redo_curve_button.clicked.connect(self._redo_curve_edit)
         self.add_profile_button.clicked.connect(self._handle_add_profile_clicked)
+
+        # Window-level shortcuts; StandardKey.Redo covers Ctrl+Shift+Z and Ctrl+Y.
+        self._undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        self._undo_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._undo_shortcut.activated.connect(self._undo_curve_edit)
+        self._redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
+        self._redo_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._redo_shortcut.activated.connect(self._redo_curve_edit)
 
         self.state.active_curve_type_changed.connect(self._on_curve_type_changed)
         self.state.profiles_list_changed.connect(self._rebuild_profile_chips)
         self.state.is_fan_control_panel_enabled_changed.connect(
             self._update_interactive_controls_enablement
         )
+        self.state.active_profile_changed.connect(lambda *_: self._clear_curve_history())
+        self.canvas.edit_committed.connect(self._on_curve_edit_committed)
         self.canvas.transient_status_signal.connect(self.transient_status.emit)
+        self._history = CurveEditHistory()
+
+    # ------------------------------------------------------------ history ---
+    def _on_curve_edit_committed(self, curve_type: str, before: list, after: list) -> None:
+        self._history.push(curve_type, before)
+        self._sync_history_buttons()
+
+    def _undo_curve_edit(self) -> None:
+        self._apply_history_snapshot(self._history.undo(self.canvas.get_curve_data))
+
+    def _redo_curve_edit(self) -> None:
+        self._apply_history_snapshot(self._history.redo(self.canvas.get_curve_data))
+
+    def _apply_history_snapshot(self, snapshot) -> None:
+        if snapshot is None:
+            return
+        curve_type, points = snapshot
+        self.settings_manager.set_active_curve_type(curve_type)
+        self.profile_manager.set_curve_data(curve_type, points)
+        self.canvas.transient_status_signal.emit(tr("saving_config"), 2000)
+        self._sync_history_buttons()
+
+    def _on_reset_clicked(self) -> None:
+        curve_type = self.state.get_active_curve_type()
+        before = self.canvas.get_curve_data(curve_type)
+        self.profile_manager.reset_active_curve()
+        after = self.canvas.get_curve_data(curve_type)
+        if [list(p) for p in before] != [list(p) for p in after]:
+            self._history.push(curve_type, [list(p) for p in before])
+        self._sync_history_buttons()
+
+    def _clear_curve_history(self) -> None:
+        self._history.clear()
+        self._sync_history_buttons()
+
+    def _sync_history_buttons(self) -> None:
+        self.undo_curve_button.setEnabled(self._history.can_undo)
+        self.redo_curve_button.setEnabled(self._history.can_redo)
 
     # -------------------------------------------------------------- chips ----
     @Slot(list, str)
