@@ -100,6 +100,8 @@ class AppState(QObject):
     language_changed = Signal(str)
     theme_mode_changed = Signal(str)
     start_on_boot_changed = Signal(bool)
+    profile_on_ac_changed = Signal(str)
+    profile_on_battery_changed = Signal(str)
     active_profile_changed = Signal(ProfileState)
     profiles_list_changed = Signal(list, str) # names, active_name
     
@@ -127,6 +129,10 @@ class AppState(QObject):
         self._language: str = "en"
         self._theme_mode: str = DEFAULT_THEME_MODE
         self._start_on_boot: bool = False
+        # Optional profile names to switch to on AC attach / battery power
+        # ("" = feature off for that source).
+        self._profile_on_ac: str = ""
+        self._profile_on_battery: str = ""
         self._active_profile_name: Optional[str] = None
         self._profiles: Dict[str, ProfileState] = {}
         self.profile_order: List[str] = []
@@ -169,6 +175,14 @@ class AppState(QObject):
     def get_start_on_boot(self) -> bool: return self._start_on_boot
     def set_start_on_boot(self, value: bool): self._set_value('_start_on_boot', value, self.start_on_boot_changed)
     start_on_boot = Property(bool, get_start_on_boot, set_start_on_boot, notify=start_on_boot_changed) # type: ignore
+
+    def get_profile_on_ac(self) -> str: return self._profile_on_ac
+    def set_profile_on_ac(self, value: str): self._set_value('_profile_on_ac', value or "", self.profile_on_ac_changed)
+    profile_on_ac = Property(str, get_profile_on_ac, set_profile_on_ac, notify=profile_on_ac_changed) # type: ignore
+
+    def get_profile_on_battery(self) -> str: return self._profile_on_battery
+    def set_profile_on_battery(self, value: str): self._set_value('_profile_on_battery', value or "", self.profile_on_battery_changed)
+    profile_on_battery = Property(str, get_profile_on_battery, set_profile_on_battery, notify=profile_on_battery_changed) # type: ignore
 
     def get_active_profile(self) -> Optional[ProfileState]: return self._profiles.get(self._active_profile_name) if self._active_profile_name else None
     active_profile = Property(QObject, get_active_profile, notify=active_profile_changed) # type: ignore

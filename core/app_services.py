@@ -22,6 +22,8 @@ from tools.localization import tr
 from config.settings import (
     FAN_MODE_BIOS, FAN_MODE_AUTO, FAN_MODE_CUSTOM, FAN_MODE_UNKNOWN,
     CHARGE_POLICY_CUSTOM, BATTERY_POLICY_CODES, BATTERY_CODE_POLICIES,
+    CHARGE_POLICY_READ_ERROR_VALUE, CHARGE_THRESHOLD_READ_ERROR_VALUE,
+    CHARGE_WATCH_INTERVAL_MS,
     INIT_APPLIED_PERCENTAGE, TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
     SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_STATUS, SET_CHARGE_STOP,
     DEFAULT_TARGET_HYSTERESIS_PERCENT, FAN_STALL_CYCLES,
@@ -68,6 +70,15 @@ class AppServices(QObject):
         self._resume_timer = QTimer(self)
         self._resume_timer.setSingleShot(True)
         self._resume_timer.timeout.connect(self.recover_after_resume)
+        # Charge watch: periodically re-read the EC's charge policy/threshold
+        # and rewrite the profile's values when firmware drifted (sleep, EC
+        # reset, battery pull). Without this, a dropped charge limit silently
+        # lets the battery charge to 100 %.
+        self._charge_watch_timer = QTimer(self)
+        self._charge_watch_timer.timeout.connect(self._verify_charge_state)
+        self._charge_watch_timer.start(CHARGE_WATCH_INTERVAL_MS)
+        self._charge_verify_in_flight = False
+        self._last_charge_write_ms = 0.0
 
         self.state.set_controller_status_message(tr("initializing"))
         self._is_ui_visible: bool = False
@@ -169,6 +180,7 @@ class AppServices(QObject):
         self._pending_cycle = None
         if self._resume_timer.isActive():
             self._resume_timer.stop()
+        self._charge_watch_timer.stop()
         if self.state.get_applied_fan_mode() != FAN_MODE_BIOS and not self._fan_emergency_latched():
             print("Graceful exit: handing fan control back to BIOS...")
             try:
@@ -296,6 +308,21 @@ class AppServices(QObject):
         self.set_fan_mode(mode)
         if mode == FAN_MODE_AUTO:
             self._perform_control_cycle()
+        # The EC can drop its charge policy/threshold across sleep (or the
+        # battery was pulled): verify and rewrite on drift.
+        self._verify_charge_state()
+
+    @Slot(bool)
+    def on_power_source_changed(self, on_ac: bool):
+        """AC attach/detach: switch profiles when the user bound one to this
+        power source, and re-verify the charge state either way (the EC can
+        drop its charge setting across power transitions)."""
+        if self._is_shutting_down:
+            return
+        binding = self.state.get_profile_on_ac() if on_ac else self.state.get_profile_on_battery()
+        if binding and binding != self.state.get_active_profile_name() and binding in self.state.profile_order:
+            self.state.set_active_profile_name(binding)
+        self._verify_charge_state()
 
     def _read_last_mode_file(self) -> str:
         try:
@@ -387,6 +414,62 @@ class AppServices(QObject):
             print(f"WMI operation failed in 'set_custom_fan_speed': {e}", file=sys.stderr)
             self.state.set_controller_status_message(tr("wmi_error"))
 
+    def _verify_charge_state(self):
+        """Async EC read of the applied charge policy/threshold; rewrites the
+        profile's values when firmware drifted (sleep, EC reset, battery pull).
+        Cheap enough (2 getters) for the watch timer and resume recovery."""
+        if self._is_shutting_down or self._charge_verify_in_flight:
+            return
+        if not self._current_profile or not self.wmi_interface.is_running:
+            return
+        if time.monotonic() - self._last_charge_write_ms < 5.0:
+            return  # a charge write just landed; its readback covers this window
+        self._charge_verify_in_flight = True
+        self.wmi_interface.submit_async(
+            "_get_charge_status",
+            on_done=lambda data, exc: self._on_charge_status(data, exc),
+        )
+
+    def _on_charge_status(self, data: Any, exc: Optional[Exception]):
+        self._charge_verify_in_flight = False
+        if self._is_shutting_down:
+            return
+        if exc is not None:
+            print(f"WMI operation failed in charge watch: {exc}", file=sys.stderr)
+            return
+        if not self._current_profile:
+            return
+        data = data or {}
+        applied_code = data.get("charge_policy", CHARGE_POLICY_READ_ERROR_VALUE)
+        applied_threshold = data.get("charge_threshold", CHARGE_THRESHOLD_READ_ERROR_VALUE)
+        try:
+            applied_code = int(applied_code)
+        except (TypeError, ValueError):
+            applied_code = CHARGE_POLICY_READ_ERROR_VALUE
+        try:
+            applied_threshold = int(applied_threshold)
+        except (TypeError, ValueError):
+            applied_threshold = CHARGE_THRESHOLD_READ_ERROR_VALUE
+        if applied_code >= 0:
+            # Reflect EC truth in the UI regardless of whether we rewrite.
+            self._update_state_from_sensor_data({"charge_policy": applied_code})
+        desired = self._current_profile.get_battery_charge_policy()
+        if desired is None or applied_code < 0:
+            return
+        applied_name = BATTERY_CODE_POLICIES.get(applied_code)
+        drifted = applied_name != desired
+        if not drifted and desired == CHARGE_POLICY_CUSTOM:
+            try:
+                wanted_threshold = int(self._current_profile.get_battery_charge_threshold())
+            except (TypeError, ValueError):
+                return
+            drifted = applied_threshold >= 0 and applied_threshold != wanted_threshold
+        if drifted:
+            print(f"Charge watch: EC reports {applied_name}/{applied_threshold}%, "
+                  f"profile wants {desired}; reapplying.", file=sys.stderr)
+            self.state.set_controller_status_message(tr("charge_watch_reapplied"))
+            self.set_battery_charge_policy(desired)
+
     def _schedule_charge_readback(self, requested: Optional[int] = None):
         def _readback():
             self.wmi_interface.submit_async(
@@ -439,6 +522,7 @@ class AppServices(QObject):
             print(f"WMI operation failed in 'set_battery_charge_policy': {exc}", file=sys.stderr)
             self.state.set_controller_status_message(tr("wmi_error"))
             return
+        self._last_charge_write_ms = time.monotonic()
         self._schedule_charge_readback(requested)
 
     @Slot(int)
@@ -457,6 +541,7 @@ class AppServices(QObject):
             print(f"WMI operation failed in 'set_battery_charge_threshold': {exc}", file=sys.stderr)
             self.state.set_controller_status_message(tr("wmi_error"))
             return
+        self._last_charge_write_ms = time.monotonic()
         self._schedule_charge_readback(threshold)
 
     @Slot()

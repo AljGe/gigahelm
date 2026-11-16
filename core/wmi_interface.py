@@ -165,6 +165,8 @@ class WMIWorker(threading.Thread):
             )
         if method_or_signal == "_get_all_sensors":
             return self._get_all_sensors()
+        if method_or_signal == "_get_charge_status":
+            return self._get_charge_status()
         if method_or_signal == "_get_temperatures":
             return self._get_temperatures()
         if method_or_signal == "_get_core_sensors":
@@ -322,6 +324,14 @@ class WMIWorker(threading.Thread):
         data['fan1_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM1))
         data['fan2_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM2))
         return data
+
+    def _get_charge_status(self) -> Dict[str, Any]:
+        """Lightweight charge-only read for the periodic watch (2 getters
+        instead of the full 12-getter sensor sweep)."""
+        return {
+            "charge_policy": self._read_optional_int(GET_CHARGE_POLICY),
+            "charge_threshold": self._read_optional_int(GET_CHARGE_STOP),
+        }
 
     def _get_all_sensors(self) -> Dict[str, Any]:
         try:

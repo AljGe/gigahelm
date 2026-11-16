@@ -6,9 +6,9 @@ Inherits from BaseControlPanel and adds the battery-specific live row: the
 applied charge limit plus battery health and cycle count.
 """
 
-from typing import Optional
+from typing import Dict, Optional
 
-from .qt import QWidget
+from .qt import QComboBox, QHBoxLayout, QLabel, QWidget
 from .base_control_panel import BaseControlPanel
 from core.state import AppState
 from core.profile_manager import ProfileManager
@@ -38,6 +38,54 @@ class BatteryControlPanel(BaseControlPanel):
             "is_fan_control": False,
         }
         super().__init__(config, state, profile_manager, parent)
+        self._build_binding_row()
+
+    def _build_binding_row(self) -> None:
+        """Per-power-source profile bindings: switch profiles automatically
+        when the machine is plugged in / runs on battery (Off = disabled)."""
+        self._binding_combos: Dict[str, QComboBox] = {}
+        row = QHBoxLayout()
+        for label_key, attr in (
+            ("power_source_ac_label", "profile_on_ac"),
+            ("power_source_battery_label", "profile_on_battery"),
+        ):
+            label = QLabel(tr(label_key))
+            combo = self._make_binding_combo(attr)
+            row.addWidget(label)
+            row.addWidget(combo, 1)
+            self._binding_combos[attr] = combo
+        self.layout().addLayout(row)
+        self.state.profiles_list_changed.connect(lambda *_: self._refresh_binding_combos())
+
+    def _make_binding_combo(self, attr: str) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem(tr("power_source_off"), "")
+        for name in self.state.get_profile_names():
+            combo.addItem(name, name)
+        current = getattr(self.state, f"get_{attr}")()
+        if current:
+            index = combo.findData(current)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        combo.activated.connect(lambda _index, combo=combo, attr=attr: self._on_binding_selected(attr, combo))
+        return combo
+
+    def _refresh_binding_combos(self) -> None:
+        for attr, combo in self._binding_combos.items():
+            selected = combo.currentData() or ""
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(tr("power_source_off"), "")
+            for name in self.state.get_profile_names():
+                combo.addItem(name, name)
+            index = combo.findData(selected)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+
+    def _on_binding_selected(self, attr: str, combo: QComboBox) -> None:
+        getattr(self.state, f"set_{attr}")(combo.currentData() or "")
+        self.profile_manager.save_config()
 
     def _connect_live_signals(self) -> None:
         self.state.applied_charge_policy_changed.connect(self._on_live_changed)
