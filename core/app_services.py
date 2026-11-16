@@ -267,6 +267,13 @@ class AppServices(QObject):
             self._arm_software_ramp()
             profile = self._current_profile
             if profile and self.state.get_applied_fan_mode() in (FAN_MODE_AUTO, FAN_MODE_CUSTOM):
+                # recover_after_resume() stops the timer and returns early when
+                # the first rebuild after wake fails; this recovery is then the
+                # only chance to bring the loop back, so the timer must be
+                # restarted here too - otherwise the EC sits at the last duty
+                # until the user touches fan mode.
+                if not self.controller_timer.isActive():
+                    self.controller_timer.start()
                 self._perform_control_cycle()
         else:
             self.state.set_controller_status_message(tr("wmi_error"))
