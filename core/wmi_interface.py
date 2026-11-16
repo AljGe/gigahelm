@@ -23,6 +23,15 @@ except ImportError:
     wmi = None
     pythoncom = None
 
+# Optional: NVML gives the dGPU's real power draw for feed-forward fan control.
+# Everything works without it (the EC temperature heuristic drives alone).
+_nvml_available = False
+try:
+    import pynvml
+    _nvml_available = True
+except ImportError:
+    pynvml = None
+
 from .battery_health import get_battery_health
 from tools.system_utils import set_thread_priority_above_normal
 
@@ -67,6 +76,9 @@ class WMIWorker(threading.Thread):
         self._wmi_get_obj: Optional[Any] = None
         self._wmi_set_obj: Optional[Any] = None
         self._com_initialized: bool = False
+        # NVML (optional): handle lives on this worker thread only.
+        self._nvml_handle = None
+        self._nvml_ok: bool = False
         self.initialization_error: Optional[Exception] = None
         self.initialization_complete = threading.Event()
         self._stop_event = threading.Event()
@@ -98,6 +110,7 @@ class WMIWorker(threading.Thread):
             self._wmi_set_obj = self._get_wmi_instance(wmi_conn, self._wmi_set_class_name)
             if not self._wmi_get_obj or not self._wmi_set_obj:
                 raise WMIConnectionError("Could not obtain WMI object. Ensure Gigabyte drivers are installed.")
+            self._init_nvml()
             return True
         except Exception as e:
             self.initialization_error = e
@@ -110,7 +123,53 @@ class WMIWorker(threading.Thread):
             return instances[0] if instances else None
         except Exception: return None
 
+    def _init_nvml(self):
+        """Optional NVML setup; runs on the worker thread (NVML is
+        thread-affine like COM). Any failure just disables feed-forward."""
+        if not _nvml_available:
+            return
+        try:
+            pynvml.nvmlInit()
+            for index in range(pynvml.nvmlDeviceGetCount()):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                name = pynvml.nvmlDeviceGetName(handle)
+                name = name.decode() if isinstance(name, bytes) else str(name)
+                lowered = name.lower()
+                if "intel" in lowered or "amd" in lowered or "radeon" in lowered:
+                    continue  # iGPU / non-target vendor: feed-forward tracks the NVIDIA dGPU
+                self._nvml_handle = handle
+                self._nvml_ok = True
+                return
+        except Exception:
+            self._nvml_ok = False
+
+    def _read_nvml_gpu(self):
+        """(power_w, util_percent) from NVML, or (None, None).
+
+        A dGPU in D3cold sleep makes NVML reads raise; transient driver
+        errors do the same. Neither disables NVML for the session - they
+        only skip feed-forward for that cycle and fall back to the EC
+        temperature heuristic."""
+        if not self._nvml_ok:
+            return None, None
+        try:
+            power_w = pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle) / 1000.0
+        except Exception:
+            return None, None
+        util = None
+        try:
+            util = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle).gpu
+        except Exception:
+            pass
+        return power_w, util
+
     def _cleanup_com(self):
+        if self._nvml_ok and pynvml:
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
+            self._nvml_ok = False
         if self._com_initialized and pythoncom:
             try: pythoncom.CoUninitialize()
             except Exception: pass
@@ -323,6 +382,12 @@ class WMIWorker(threading.Thread):
         data = self._get_temperatures()
         data['fan1_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM1))
         data['fan2_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM2))
+        if self._nvml_ok:
+            power_w, gpu_util = self._read_nvml_gpu()
+            if power_w is not None:
+                data['gpu_power_w'] = power_w
+            if gpu_util is not None:
+                data['gpu_util'] = gpu_util
         return data
 
     def _get_charge_status(self) -> Dict[str, Any]:

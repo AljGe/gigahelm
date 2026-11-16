@@ -73,6 +73,7 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "custom_fan_speed": DEFAULT_CUSTOM_FAN_SPEED,
     "battery_charge_policy": DEFAULT_CHARGE_POLICY,
     "battery_charge_threshold": DEFAULT_CHARGE_THRESHOLD,
+    "gpu_power_feedforward": True,
     "gui_update_interval_ms": DEFAULT_GUI_UPDATE_INTERVAL_MS,
     "controller_update_interval_ms": DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS,
     "fan_hysteresis_percent": DEFAULT_FAN_HYSTERESIS_PERCENT,
@@ -141,6 +142,13 @@ CHARGE_THRESHOLD_READ_ERROR_VALUE: int = -1
 # How often the charge watch re-reads the EC's applied charge policy/threshold
 # and rewrites it when firmware drifted (sleep, EC reset, battery pull).
 CHARGE_WATCH_INTERVAL_MS: int = 60_000
+
+# --- NVML GPU power feed-forward (per-profile toggle: gpu_power_feedforward) ---
+# Curve-temperature offset = k * max(0, power - idle), clamped. See
+# core/gpu_power.py for the calibration reasoning.
+NVML_FF_IDLE_W: float = 30.0
+NVML_FF_K_C_PER_W: float = 0.4
+NVML_FF_MAX_BOOST_C: float = 10.0
 INIT_APPLIED_PERCENTAGE: int = -1
 
 # ==============================================================================
