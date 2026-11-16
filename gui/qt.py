@@ -85,6 +85,7 @@ from PySide6.QtWidgets import (
     QStackedLayout,
     QLayout,
     QLayoutItem,
+    QScrollArea,
     QDialog,
     QDialogButtonBox
 )

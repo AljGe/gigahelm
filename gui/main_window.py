@@ -105,7 +105,7 @@ class MainWindow(QMainWindow):
         self.connect_signals()
         self.init_tray_icon()
         self._on_theme_changed()
-        self.resize(1180, 760)
+        self.resize(1180, 800)
         self._restore_geometry()
 
         if self.start_minimized:
@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         if geometry_str:
             try:
                 self.restoreGeometry(QByteArray.fromHex(geometry_str.encode('ascii')))
-            except (ValueError, TypeError): self.resize(1180, 760)
+            except (ValueError, TypeError): self.resize(1180, 800)
 
     def _apply_locale(self):
         QLocale.setDefault(QLocale(self.state.get_language()))
@@ -132,7 +132,10 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         self.setWindowTitle(tr("window_title"))
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setMinimumSize(1080, 728)
+        # Deliberately below the dashboard's layout minimum: on small screens
+        # Windows clamps the window anyway, and the scroll area below keeps
+        # every control reachable instead of clipping text.
+        self.setMinimumSize(720, 480)
         main_container = QWidget()
         main_container.setObjectName("mainContainer")
         self.setCentralWidget(main_container)
@@ -140,15 +143,20 @@ class MainWindow(QMainWindow):
         overall_layout.setContentsMargins(0, 0, 0, 0); overall_layout.setSpacing(0)
         self.title_bar = CustomTitleBar(self.state, self.settings_manager, self.theme, self)
         overall_layout.addWidget(self.title_bar)
-        content_widget = QWidget()
-        content_widget.setObjectName("contentWidget")
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
+        content_scroll = QScrollArea()
+        content_scroll.setObjectName("contentWidget")
+        content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content_scroll.setWidgetResizable(True)
+        content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        content_scroll.viewport().setAutoFillBackground(False)
         self.dashboard = Dashboard(
             self.state, self.profile_manager, self.settings_manager, self.theme, self
         )
-        content_layout.addWidget(self.dashboard)
-        overall_layout.addWidget(content_widget, 1)
+        # The dashboard paints its own $bg via the contentWidget QSS rule.
+        self.dashboard.setObjectName("contentWidget")
+        content_scroll.setWidget(self.dashboard)
+        overall_layout.addWidget(content_scroll, 1)
 
     def connect_signals(self):
         self.title_bar.minimize_button.clicked.connect(self.showMinimized)
@@ -287,8 +295,17 @@ class MainWindow(QMainWindow):
             level = "info"
         self._set_status_text(text, level)
 
+    _STATUS_MAX_WIDTH = 360  # keeps the bar breathable down to minimum width
+
     def _set_status_text(self, text: str, level: str) -> None:
-        self.title_bar.status_label.setText(text)
+        metrics = self.title_bar.status_label.fontMetrics()
+        if metrics.horizontalAdvance(text) > self._STATUS_MAX_WIDTH:
+            self.title_bar.status_label.setText(
+                metrics.elidedText(text, Qt.TextElideMode.ElideRight, self._STATUS_MAX_WIDTH))
+            self.title_bar.status_label.setToolTip(text)
+        else:
+            self.title_bar.status_label.setText(text)
+            self.title_bar.status_label.setToolTip("")
         if self.title_bar.status_label.property("level") != level:
             self.title_bar.status_label.setProperty("level", level)
             repolish(self.title_bar.status_label)
