@@ -95,6 +95,10 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "battery_display_format": "Health {health}% · {cycles} cycles",
     "battery_health_tooltip": "Battery health = Windows full-charge capacity / design capacity. The EC health code is not a percentage.",
     "charge_readback_mismatch": "Charge limit readback {actual}% != requested {requested}%",
+    "charge_watch_reapplied": "Battery charge setting drifted from profile; reapplied",
+    "power_source_off": "Off",
+    "power_source_ac_label": "On AC use:",
+    "power_source_battery_label": "On battery use:",
 
     # 状态卡片页脚
     "stat_fan_footer_format": "Target {target}% · EC {raw}",
@@ -219,6 +223,10 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "battery_display_format": "健康 {health}% · {cycles} 次循环",
     "battery_health_tooltip": "电池健康 = Windows 满电容量 / 设计容量。EC 的健康值是状态码，不是百分比。",
     "charge_readback_mismatch": "充电上限回读 {actual}% 与请求 {requested}% 不一致",
+    "charge_watch_reapplied": "电池充电设置与配置不一致，已重新应用",
+    "power_source_off": "关闭",
+    "power_source_ac_label": "接电源时使用：",
+    "power_source_battery_label": "用电池时使用：",
 
     # 状态卡片页脚
     "stat_fan_footer_format": "目标 {target}% · EC {raw}",
