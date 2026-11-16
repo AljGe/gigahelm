@@ -74,7 +74,6 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "battery_charge_policy": DEFAULT_CHARGE_POLICY,
     "battery_charge_threshold": DEFAULT_CHARGE_THRESHOLD,
     "gpu_power_feedforward": True,
-    "gui_update_interval_ms": DEFAULT_GUI_UPDATE_INTERVAL_MS,
     "controller_update_interval_ms": DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS,
     "fan_hysteresis_percent": DEFAULT_FAN_HYSTERESIS_PERCENT,
     "min_adjustment_step": DEFAULT_MIN_ADJUSTMENT_STEP,

@@ -121,7 +121,7 @@ QLabel#liveLine { font-size: 9pt; color: $text_muted; }
 
 QFrame#segmented { background: $surface_alt; border: 1px solid $border; border-radius: 9px; }
 QFrame#segmented QPushButton { background: transparent; border: none; border-radius: 7px;
-    padding: 5px 14px; font-size: 9pt; font-weight: 600; color: $text_muted; }
+    padding: 8px 18px; font-size: 9pt; font-weight: 600; color: $text_muted; }
 QFrame#segmented QPushButton:hover { color: $text; }
 QFrame#segmented QPushButton:checked { background: $accent; color: $accent_text; }
 QFrame#segmented QPushButton:disabled { color: $border_strong; }

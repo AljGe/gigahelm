@@ -493,6 +493,14 @@ class LightweightCurveCanvas(QWidget):
         self._cached_cpu_curve_poly = self._create_curve_polygon(self.cpu_curve_data, 'cpu')
         self._cached_gpu_curve_poly = self._create_curve_polygon(self.gpu_curve_data, 'gpu')
 
+    def _recache_active_curve(self, data: FanTable):
+        """Per-mouse-move path: only the dragged curve's geometry changed,
+        so rebuilding the other 100-point spline would be pure waste."""
+        if self.active_curve_type == 'cpu':
+            self._cached_cpu_curve_poly = self._create_curve_polygon(data, 'cpu')
+        else:
+            self._cached_gpu_curve_poly = self._create_curve_polygon(data, 'gpu')
+
     def _create_curve_polygon(self, data: FanTable, curve_type: CurveType) -> Optional[QPolygonF]:
         if not data: return None
         interpolator = self._get_cached_interpolator(curve_type)
@@ -597,12 +605,17 @@ class LightweightCurveCanvas(QWidget):
 
     def _delete_point(self, curve_type: CurveType, index: int):
         data = [list(p) for p in self.get_curve_data(curve_type)]
-        if len(data) > MIN_CURVE_POINTS:
-            before = data
-            del data[index]
-            setattr(self, f"_{curve_type}_interpolator", None)
-            self._commit_edit(curve_type, before, data)
-            self.update()
+        if len(data) <= MIN_CURVE_POINTS:
+            # Right-clicking a minimum-size curve is a no-op: say so instead
+            # of silently ignoring the click.
+            self.transient_status_signal.emit(
+                tr("curve_min_points_reached", n=MIN_CURVE_POINTS), 2000)
+            return
+        before = data
+        del data[index]
+        setattr(self, f"_{curve_type}_interpolator", None)
+        self._commit_edit(curve_type, before, data)
+        self.update()
 
     def _drag_point(self, pos: QPointF):
         """实现水平和垂直方向的完全自由、智能联动的拖拽。"""
@@ -626,7 +639,7 @@ class LightweightCurveCanvas(QWidget):
 
         # 4. 更新状态并重绘
         setattr(self, f"_{self.active_curve_type}_interpolator", None)
-        self._recache_curves()
+        self._recache_active_curve(data)
         self.update()
 
     def _enforce_speed_monotonicity_during_drag(self, data: FanTable, dragged_index: int):

@@ -71,3 +71,11 @@ class SettingsManager(QObject):
     def set_active_curve_type(self, curve_type: str):
         """Set the curve type shown as active in the UI."""
         self.state.set_active_curve_type(curve_type)
+
+    def set_gui_update_interval_ms(self, interval_ms: int):
+        """UI refresh cadence is a global app setting, not a profile value."""
+        if interval_ms not in (250, 500, 1000, 2000):
+            return
+        if self.state.get_gui_update_interval_ms() != interval_ms:
+            self.state.set_gui_update_interval_ms(interval_ms)
+            self.profile_manager.save_config()

@@ -9,26 +9,51 @@ import copy
 import shutil
 import sys
 import tempfile
+import threading
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-from gui.qt import QObject, Signal
+from gui.qt import QObject, QTimer, Signal
 from .state import AppState, ProfileState
 from config.settings import DEFAULT_PROFILE_SETTINGS, DEFAULT_PROFILES, DEFAULT_THEME_MODE
 from tools.localization import tr
 
 class ProfileManager(QObject):
     """Central class that manages the application's profiles."""
-    
+
+    #: Emitted from the writer thread when changes landed during a write.
+    _resave_needed = Signal()
+
     def __init__(self, app_state: AppState, parent: Optional[QObject] = None):
         super().__init__(parent)
         self.state = app_state
         self.config_path = self.state.paths.control_config
+        # Debounced background persistence: save_config() only arms a timer;
+        # the JSON write runs on a daemon thread so a slow disk never blocks
+        # the GUI. save_config_sync() flushes inline (shutdown path).
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self._save_now)
+        self._write_thread: Optional[threading.Thread] = None
+        self._resave_pending = False
+        self._resave_needed.connect(self._save_now)
 
     def load_config(self):
         """Load the config from the JSON file and populate state."""
         config_data = self._read_config_file()
-        
+
+        # One-time migration: the UI refresh interval moved from per-profile
+        # storage to a global app setting. Top-level key wins; the active
+        # profile's legacy value is read before from_dict drops it.
+        interval = config_data.get("gui_update_interval_ms")
+        if interval not in (250, 500, 1000, 2000):
+            active_raw = config_data.get("profiles", {}).get(config_data.get("active_profile_name"), {})
+            interval = active_raw.get("gui_update_interval_ms") if isinstance(active_raw, dict) else None
+        if interval not in (250, 500, 1000, 2000):
+            interval = 1000
+        self.state.set_gui_update_interval_ms(int(interval))
+
         self.state.set_language(config_data.get("language", "en"))
         self.state.set_theme_mode(config_data.get("theme_mode", DEFAULT_THEME_MODE))
         self.state.set_start_on_boot(config_data.get("start_on_boot", False))
@@ -56,9 +81,9 @@ class ProfileManager(QObject):
             active_profile_name = self.state.get_profile_names()[0] if self.state.get_profile_names() else next(iter(DEFAULT_PROFILES))
         self.state.set_active_profile_name(active_profile_name)
 
-    def save_config(self):
-        """Save the current state to the JSON config file. Atomic write: write to a temp file, then replace, so a mid-write crash cannot corrupt the config."""
-        config_data = {
+    def _collect_config_data(self) -> Dict[str, Any]:
+        """Snapshot of everything that goes into the config JSON."""
+        return {
             "language": self.state.get_language(),
             "theme_mode": self.state.get_theme_mode(),
             "start_on_boot": self.state.get_start_on_boot(),
@@ -67,9 +92,31 @@ class ProfileManager(QObject):
             "profile_on_battery": self.state.get_profile_on_battery(),
             "active_profile_name": self.state.get_active_profile_name(),
             "window_geometry": self.state.window_geometry,
+            "gui_update_interval_ms": self.state.get_gui_update_interval_ms(),
             "profile_order": self.state.profile_order, # Preserve the order
             "profiles": self.state.get_profiles_for_config()
         }
+
+    def save_config(self):
+        """Debounced async save: bursts of state changes coalesce into one
+        background write 400 ms after the last call. Atomic write: temp file
+        + replace, so a mid-write crash cannot corrupt the config."""
+        self._save_timer.start()
+
+    def _save_now(self):
+        self._save_timer.stop()
+        if self._write_thread is not None and self._write_thread.is_alive():
+            self._resave_pending = True  # writer re-arms itself when done
+            return
+        config_data = self._collect_config_data()
+        self._write_thread = threading.Thread(
+            target=self._write_config_file, args=(config_data,),
+            daemon=True, name="ConfigWriter")
+        self._write_thread.start()
+
+    def _write_config_file(self, config_data: Dict[str, Any]) -> None:
+        """Atomic JSON write; safe on a non-GUI thread (the status-message
+        signal is delivered queued)."""
         temp_path = ""
         try:
             if os.path.exists(self.config_path):
@@ -91,6 +138,20 @@ class ProfileManager(QObject):
                 except OSError: pass
             print(f"Error: could not save profiles to '{self.config_path}'. Error: {e}", file=sys.stderr)
             self.state.set_controller_status_message(tr("config_save_error", error=str(e)))
+        finally:
+            if self._write_thread is threading.current_thread():
+                self._write_thread = None
+            if self._resave_pending:
+                self._resave_pending = False
+                self._resave_needed.emit()
+
+    def save_config_sync(self) -> None:
+        """Blocking save for shutdown: join any in-flight writer, then write
+        a fresh snapshot inline."""
+        self._save_timer.stop()
+        if self._write_thread is not None and self._write_thread.is_alive():
+            self._write_thread.join(timeout=2.0)
+        self._write_config_file(self._collect_config_data())
 
     def _read_config_file(self) -> Dict[str, Any]:
         try:

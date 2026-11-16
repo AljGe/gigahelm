@@ -32,16 +32,14 @@ class LevelBar(QWidget):
         self.update()
 
     def set_level(self, level: Optional[float]) -> None:
-        """Set the fraction to draw; `None` or <= 0 draws nothing."""
-        if level is None:
-            self._level = None
-        else:
-            self._level = max(0.0, min(1.0, float(level)))
+        """Set the fraction to draw; `None` draws the track only."""
+        new_level = None if level is None else max(0.0, min(1.0, float(level)))
+        if new_level == self._level:
+            return
+        self._level = new_level
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        if not self._level:
-            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -50,7 +48,8 @@ class LevelBar(QWidget):
         painter.setBrush(self._track_color)
         painter.drawRoundedRect(rect, self.RADIUS, self.RADIUS)
 
-        fill_rect = QRectF(rect.left(), rect.top(), rect.width() * self._level, rect.height())
-        painter.setBrush(self._fill_color)
-        painter.drawRoundedRect(fill_rect, self.RADIUS, self.RADIUS)
+        if self._level:
+            fill_rect = QRectF(rect.left(), rect.top(), rect.width() * self._level, rect.height())
+            painter.setBrush(self._fill_color)
+            painter.drawRoundedRect(fill_rect, self.RADIUS, self.RADIUS)
         painter.end()

@@ -85,10 +85,18 @@ class WMIWorker(threading.Thread):
         # the GPU out of D3cold. AppServices mirrors the active profile's
         # gpu_power_feedforward flag into this every cycle.
         self._nvml_poll_enabled: bool = True
+        # Utilization is display-only: skip the extra NVML call while no UI
+        # is watching (AppServices mirrors UI visibility into this).
+        self._nvml_util_enabled: bool = True
         # Idle skip: an idle-floor reading pauses polling until genuine load
         # (EC GPU temp) or a sleep/wake cycle re-arms it.
         self._nvml_last_power_w: Optional[float] = None
         self._nvml_idle_paused: bool = False
+        # GPU-asleep probe latch: while the dGPU is off, the EC reports 0/0
+        # for both GPU sensors, so re-probing them every sweep buys nothing.
+        # A fresh worker (rebuild/resume) starts unlatched.
+        self._gpu_asleep_latched: bool = False
+        self._gpu_sleep_probes_left: int = 0
         self.initialization_error: Optional[Exception] = None
         self.initialization_complete = threading.Event()
         self._stop_event = threading.Event()
@@ -167,10 +175,11 @@ class WMIWorker(threading.Thread):
         except Exception:
             return None, None
         util = None
-        try:
-            util = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle).gpu
-        except Exception:
-            pass
+        if self._nvml_util_enabled:
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle).gpu
+            except Exception:
+                pass
         return power_w, util
 
     def _cleanup_com(self):
@@ -198,10 +207,9 @@ class WMIWorker(threading.Thread):
         self.initialization_complete.set()
 
         while not self._stop_event.is_set():
-            try:
-                request = self._request_queue.get(timeout=0.25)
-            except queue.Empty:
-                continue
+            # Blocking get: request_stop() always enqueues a STOP sentinel,
+            # so a poll timeout would only add 4 idle wakeups per second.
+            request = self._request_queue.get()
             if request[0] is WMIInternalSignal.STOP:
                 break
             if self._stop_event.is_set():
@@ -380,12 +388,19 @@ class WMIWorker(threading.Thread):
 
     def _get_temperatures(self) -> Dict[str, Any]:
         cpu_temp = self._validate_temp(self._execute_wmi_method(self._wmi_get_obj, GET_CPU_TEMP))
+        if self._gpu_asleep_latched and self._gpu_sleep_probes_left > 0:
+            self._gpu_sleep_probes_left -= 1
+            return {'cpu_temp': cpu_temp, 'gpu_temp': TEMP_READ_ERROR_VALUE, 'gpu_asleep': True}
         raw_gpu = [self._execute_wmi_method(self._wmi_get_obj, m) for m in [GET_GPU_TEMP1, GET_GPU_TEMP2] if hasattr(self._wmi_get_obj, m)]
         temps = [self._validate_temp(v) for v in raw_gpu]
         gpu_temp = max([t for t in temps if t != TEMP_READ_ERROR_VALUE], default=TEMP_READ_ERROR_VALUE)
         # EC reports 0 for both GPU sensors exactly when the dGPU is powered down (Advanced Optimus);
         # that is a sleep state, not a sensor failure. Unparseable raw values keep gpu_asleep False.
         gpu_asleep = gpu_temp == TEMP_READ_ERROR_VALUE and bool(raw_gpu) and all(self._to_int(v) == 0 for v in raw_gpu)
+        # Latch: while asleep, skip the two GPU getters for the next 19 sweeps
+        # (~12 s visible / ~20 s hidden wake-detection latency).
+        self._gpu_asleep_latched = gpu_asleep
+        self._gpu_sleep_probes_left = 19 if gpu_asleep else 0
         return {'cpu_temp': cpu_temp, 'gpu_temp': gpu_temp, 'gpu_asleep': gpu_asleep}
 
     def _poll_nvml_if_allowed(self, data: Dict[str, Any]) -> None:
@@ -469,6 +484,12 @@ class WMIInterface(QObject):
         self._retired_workers: List[WMIWorker] = []
         self._is_running = False
         self._initialization_error: Optional[Exception] = None
+        # One shared 50 ms drain timer for all in-flight async results,
+        # instead of a 20 ms QTimer per request.
+        self._pending_results: list = []
+        self._result_timer = QTimer(self)
+        self._result_timer.setInterval(50)
+        self._result_timer.timeout.connect(self._drain_results)
 
     @property
     def is_running(self) -> bool:
@@ -516,6 +537,13 @@ class WMIInterface(QObject):
         worker = self._worker_thread
         if worker is not None:
             worker._nvml_poll_enabled = bool(enabled)
+
+    def set_nvml_util_enabled(self, enabled: bool) -> None:
+        """Mirror UI visibility onto the worker: no NVML utilization read
+        while nothing displays it. Same plain attribute write as above."""
+        worker = self._worker_thread
+        if worker is not None:
+            worker._nvml_util_enabled = bool(enabled)
 
     def stop(self, join_timeout: float = WMI_REQUEST_TIMEOUT_S):
         with self._lock:
@@ -583,26 +611,32 @@ class WMIInterface(QObject):
             return True
         if on_done is None:
             return True
-        timer = QTimer(self)
-        timer.setInterval(20)
         deadline = time.monotonic() + WMI_ASYNC_RESULT_TIMEOUT_S
+        self._pending_results.append(
+            (result_queue, on_done, deadline, str(method_or_signal)))
+        if not self._result_timer.isActive():
+            self._result_timer.start()
+        return True
 
-        def _poll():
+    @Slot()
+    def _drain_results(self):
+        """Fire exactly one callback per completed request, on the GUI
+        thread (the timer lives on WMIInterface, a GUI-thread QObject)."""
+        now = time.monotonic()
+        still = []
+        for result_queue, on_done, deadline, label in self._pending_results:
             try:
                 result, exc = result_queue.get_nowait()
             except queue.Empty:
-                if time.monotonic() >= deadline:
-                    timer.stop()
-                    timer.deleteLater()
-                    on_done(None, WMIRequestTimeoutError(f"WMI request '{method_or_signal}' timed out."))
-                return
-            timer.stop()
-            timer.deleteLater()
+                if now >= deadline:
+                    on_done(None, WMIRequestTimeoutError(f"WMI request '{label}' timed out."))
+                else:
+                    still.append((result_queue, on_done, deadline, label))
+                continue
             on_done(result, exc)
-
-        timer.timeout.connect(_poll)
-        timer.start()
-        return True
+        self._pending_results = still
+        if not still:
+            self._result_timer.stop()
 
     # --- 公共API方法 ---
     def execute_method(self, method_name: str, **kwargs) -> Any:

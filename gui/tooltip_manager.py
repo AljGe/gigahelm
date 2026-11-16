@@ -45,6 +45,8 @@ class TooltipManager(QObject):
         if widget not in self._registered_widgets:
             self._registered_widgets[widget] = text_key
             widget.installEventFilter(self)
+            # Prune on destruction; the handler never touches the C++ object.
+            widget.destroyed.connect(lambda *_: self._forget(widget))
 
     def unregister(self, widget: QWidget):
         """取消一个控件的工具提示注册。"""
@@ -77,20 +79,34 @@ class TooltipManager(QObject):
         
         return super().eventFilter(watched, event)
 
+    def _forget(self, widget: QWidget) -> None:
+        self._registered_widgets.pop(widget, None)
+        if self._current_widget is widget:
+            self._current_widget = None
+            self._timer.stop()
+
     @Slot()
     def _show_tooltip(self):
         """
         当计时器触发时，显示工具提示。
         """
-        if self._current_widget and self._current_widget.isVisible() and self._current_widget.isEnabled():
-            text_key = self._registered_widgets.get(self._current_widget)
-            if text_key:
-                translated_text = tr(text_key)
-                if translated_text:
-                    # 增加偏移量以防止提示框在光标下闪烁，从而避免事件冲突
-                    pos = QCursor.pos()
-                    offset_pos = QPoint(pos.x() + 16, pos.y() + 16)
-                    QToolTip.showText(offset_pos, translated_text, self._current_widget)
+        try:
+            current = self._current_widget
+            if not (current and current.isVisible() and current.isEnabled()):
+                return
+        except RuntimeError:
+            # C++ object already deleted (deleteLater without unregister).
+            self._current_widget = None
+            self._timer.stop()
+            return
+        text_key = self._registered_widgets.get(current)
+        if text_key:
+            translated_text = tr(text_key)
+            if translated_text:
+                # 增加偏移量以防止提示框在光标下闪烁，从而避免事件冲突
+                pos = QCursor.pos()
+                offset_pos = QPoint(pos.x() + 16, pos.y() + 16)
+                QToolTip.showText(offset_pos, translated_text, current)
 
 # 创建全局单例实例，供应用各处使用
 tooltip_manager = TooltipManager.get_instance()
