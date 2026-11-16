@@ -15,7 +15,7 @@ from .dashboard import Dashboard
 from .custom_title_bar import CustomTitleBar
 from .app_icon import load_app_icon
 from .theme import ThemeManager
-from core.state import AppState, ProfileState
+from core.state import AppState
 from tools.localization import tr, set_language
 from core.app_services import AppServices
 from core.profile_manager import ProfileManager
@@ -158,13 +158,12 @@ class MainWindow(QMainWindow):
         
         self.state.controller_status_message_changed.connect(self._update_status_bar)
         self.state.controller_status_message_changed.connect(self._on_controller_status_changed)
-        self.state.active_profile_changed.connect(self._on_active_profile_changed)
         self.state.language_changed.connect(self._on_language_changed_by_state)
         QApplication.instance().paletteChanged.connect(self._on_application_palette_changed)
 
         self.theme.changed.connect(self._on_theme_changed)
         self.dashboard.transient_status.connect(self.set_transient_status)
-        self.dashboard.gui_update_interval_selected.connect(self.gui_update_timer.setInterval)
+        self.state.gui_update_interval_ms_changed.connect(self.gui_update_timer.setInterval)
         self.status_clear_timer.timeout.connect(self._clear_transient_status)
 
     def init_tray_icon(self):
@@ -216,7 +215,7 @@ class MainWindow(QMainWindow):
         self._charge_actions = []
         entries = [(tr("mode_bios"), CHARGE_POLICY_BIOS, None)]
         for threshold in (60, 70, 80, 90, 100):
-            entries.append((f"{threshold} %", CHARGE_POLICY_CUSTOM, threshold))
+            entries.append((tr("tray_charge_percent", n=threshold), CHARGE_POLICY_CUSTOM, threshold))
         for label, policy, threshold in entries:
             action = QAction(label, self._charge_menu)
             action.setCheckable(True)
@@ -246,13 +245,6 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self.theme.stylesheet())
         self.title_bar.apply_theme()
         self.dashboard.apply_theme()
-
-    @Slot(ProfileState)
-    def _on_active_profile_changed(self, profile: ProfileState):
-        if profile:
-            new_interval = profile.get_value('gui_update_interval_ms', 1000)
-            if self.gui_update_timer.interval() != new_interval:
-                self.gui_update_timer.setInterval(new_interval)
 
     @Slot(str)
     def _update_status_bar(self, message: str):
@@ -299,9 +291,7 @@ class MainWindow(QMainWindow):
         self._update_status_bar(self.state.get_controller_status_message())
 
     def _start_gui_timer(self):
-        active_profile = self.state.get_active_profile()
-        initial_interval = active_profile.get_value('gui_update_interval_ms', 1000) if active_profile else 1000
-        self.gui_update_timer.setInterval(initial_interval)
+        self.gui_update_timer.setInterval(self.state.get_gui_update_interval_ms())
         try:
             self.gui_update_timer.timeout.disconnect(self.gui_tick.emit)
         except (TypeError, RuntimeError):
@@ -434,10 +424,17 @@ class MainWindow(QMainWindow):
         # 调用AppServices中的方法来处理UI可见性变化
         self.app_services.set_ui_visibility(True)
         self._start_gui_timer()
+        if self.command_poll_timer:
+            self.command_poll_timer.setInterval(500)
         super().showEvent(event)
 
     def hideEvent(self, event: QHideEvent):
         self.gui_update_timer.stop()
+        # Tray-only: shared-memory CLI commands are rare; a 2 s poll keeps
+        # the timer wakeups out of the idle profile. Tray-menu actions are
+        # in-process and unaffected.
+        if self.command_poll_timer:
+            self.command_poll_timer.setInterval(2000)
         # 调用AppServices中的方法来处理UI可见性变化
         self.app_services.set_ui_visibility(False)
         super().hideEvent(event)
@@ -543,6 +540,11 @@ class MainWindow(QMainWindow):
             self.settings_manager.set_window_geometry(geometry_str)
         except Exception as e:
             print(f"Warning: failed to save window geometry on close: {e}", file=sys.stderr)
+        # Debounced saves never fire after quit: flush the config inline.
+        try:
+            self.profile_manager.save_config_sync()
+        except Exception as e:
+            print(f"Warning: failed to save config on close: {e}", file=sys.stderr)
 
     def closeEvent(self, event: QCloseEvent):
         if self._is_quitting: event.accept()

@@ -38,6 +38,15 @@ FLAG_REASSERT_EVERY_CYCLES = 8
 # H3 safety: a control cycle that takes longer than this means the worker is hung.
 CYCLE_WATCHDOG_MS = 8000
 
+_MODE_LABEL_KEYS = {
+    FAN_MODE_AUTO: "mode_auto", FAN_MODE_CUSTOM: "mode_custom", FAN_MODE_BIOS: "mode_bios",
+}
+
+
+def _mode_label(mode: str) -> str:
+    key = _MODE_LABEL_KEYS.get(mode)
+    return tr(key) if key else mode
+
 FanTable = List[List[int]]
 
 class AppServices(QObject):
@@ -51,6 +60,19 @@ class AppServices(QObject):
         self._current_profile: Optional[ProfileState] = None
         self.wmi_interface = WMIInterface()
         self.auto_temp_controller = AutoTemperatureController()
+        # Static setter map for _update_state_from_sensor_data: replaces the
+        # per-tick hasattr/getattr reflection walk. Keys without a matching
+        # AppState setter (gpu_power_w, raw EC status getters) were skipped
+        # before and stay absent here.
+        self._sensor_setters = {
+            'cpu_temp': state.set_cpu_temp, 'gpu_temp': state.set_gpu_temp,
+            'gpu_asleep': state.set_gpu_asleep, 'gpu_util': state.set_gpu_util,
+            'fan1_rpm': state.set_fan1_rpm, 'fan2_rpm': state.set_fan2_rpm,
+            'ec_fixed_fan_speed_raw': state.set_ec_fixed_fan_speed_raw,
+            'battery_health': state.set_battery_health, 'battery_cycles': state.set_battery_cycles,
+            'charge_policy': state.set_applied_charge_policy,
+            'charge_threshold': state.set_applied_charge_threshold,
+        }
 
         self.controller_timer = QTimer(self)
         self.controller_timer.timeout.connect(self._perform_control_cycle)
@@ -95,7 +117,8 @@ class AppServices(QObject):
         # A crash leaves last_mode=emergency and the EC at 80%.  Do not
         # auto-apply the profile's quiet curve if Task Scheduler relaunched us.
         self._suppress_profile_fan_mode = self._read_last_mode_file() == "emergency"
-        self._write_heartbeat()
+        self._last_heartbeat_ms: float = 0.0
+        self._write_heartbeat(force=True)
 
         # Independent EC-level fail-safe: forces the guard floor duty when the
         # CPU crosses a thermal threshold and the EC sits below it, even if
@@ -214,7 +237,8 @@ class AppServices(QObject):
                 return  # a newer mode request superseded this one
             if exc is not None:
                 print(f"WMI operation failed while handing fans to BIOS: {exc}", file=sys.stderr)
-                self.state.set_controller_status_message(tr("wmi_error"))
+                self.state.set_controller_status_message(
+                    tr("fan_mode_apply_failed", mode=_mode_label(FAN_MODE_BIOS)))
                 if fallback_mode in (FAN_MODE_AUTO, FAN_MODE_CUSTOM):
                     # Keep the EC under the previous curve instead of leaving
                     # it untouched until the external watchdog fires.
@@ -347,8 +371,14 @@ class AppServices(QObject):
         except OSError as e:
             print(f"Warning: could not write {LAST_MODE_FILENAME}: {e}", file=sys.stderr)
 
-    def _write_heartbeat(self):
-        """Mtime is the liveness signal read by the external watchdog."""
+    def _write_heartbeat(self, force: bool = False):
+        """Mtime is the liveness signal read by the external watchdog.
+        Cycle-path writes are batched to at most one per 5 s — still an
+        order of magnitude under WATCHDOG_HEARTBEAT_STALE_S (45 s)."""
+        now = time.monotonic()
+        if not force and now - self._last_heartbeat_ms < 5.0:
+            return
+        self._last_heartbeat_ms = now
         try:
             if not os.path.exists(self._heartbeat_file_path):
                 with open(self._heartbeat_file_path, 'w', encoding='ascii') as f:
@@ -378,7 +408,7 @@ class AppServices(QObject):
                 self.state.set_applied_fan_mode(FAN_MODE_AUTO)
                 self.state.set_is_fan_control_panel_enabled(True)
                 self._write_last_mode_state(FAN_MODE_AUTO)
-                self._write_heartbeat()
+                self._write_heartbeat(force=True)
                 self._perform_control_cycle()
             elif mode == FAN_MODE_CUSTOM:
                 self._auto_target = None
@@ -389,7 +419,7 @@ class AppServices(QObject):
                 self.state.set_applied_fan_mode(FAN_MODE_CUSTOM)
                 self.state.set_is_fan_control_panel_enabled(True)
                 self._write_last_mode_state(FAN_MODE_CUSTOM)
-                self._write_heartbeat()
+                self._write_heartbeat(force=True)
                 self._perform_control_cycle()
             elif mode == FAN_MODE_BIOS:
                 if self.controller_timer.isActive():
@@ -405,7 +435,8 @@ class AppServices(QObject):
                 self.state.set_applied_fan_mode(mode)
         except WMIError as e:
             print(f"WMI operation failed in 'set_fan_mode': {e}", file=sys.stderr)
-            self.state.set_controller_status_message(tr("wmi_error"))
+            self.state.set_controller_status_message(
+                tr("fan_mode_apply_failed", mode=_mode_label(mode)))
             self.state.set_applied_fan_mode(FAN_MODE_UNKNOWN)
             self.state.set_applied_fan_speed_percent(INIT_APPLIED_PERCENTAGE)
 
@@ -777,7 +808,11 @@ class AppServices(QObject):
         if not self._is_ui_visible:
             return
 
-        self.wmi_interface.request_core_sensor_poll()
+        # In auto/custom the control cycle sweeps at its own cadence and
+        # already feeds this cache; polling here as well would double the EC
+        # traffic. In BIOS/UNKNOWN this tick is the only poller.
+        if self.state.get_applied_fan_mode() not in (FAN_MODE_AUTO, FAN_MODE_CUSTOM):
+            self.wmi_interface.request_core_sensor_poll()
         sensor_data = self.wmi_interface.get_latest_core_sensor_data()
         self._update_state_from_sensor_data(sensor_data)
 
@@ -807,25 +842,19 @@ class AppServices(QObject):
             return None
 
     def _update_state_from_sensor_data(self, sensor_data: dict):
-        """使用反射机制，并正确处理特殊映射，用从WMI获取的数据更新AppState。"""
-        if not sensor_data: return
-
-        key_map = {
-            'charge_policy': 'applied_charge_policy',
-            'charge_threshold': 'applied_charge_threshold'
-        }
-
-        for key, value in sensor_data.items():
-            state_key = key_map.get(key, key)
-            setter_name = f"set_{state_key}"
-
-            if hasattr(self.state, setter_name):
-                if state_key == 'applied_charge_policy':
-                    value = BATTERY_CODE_POLICIES.get(value, "err")
-                getattr(self.state, setter_name)(value)
+        """Push sensor values into AppState via the static setter map
+        (change-gated setters keep the old dedup semantics)."""
+        if not sensor_data:
+            return
+        if 'charge_policy' in sensor_data:
+            sensor_data['charge_policy'] = BATTERY_CODE_POLICIES.get(sensor_data['charge_policy'], "err")
+        for key, setter in self._sensor_setters.items():
+            if key in sensor_data:
+                setter(sensor_data[key])
 
     def set_ui_visibility(self, is_visible: bool):
         """当UI可见性变化时调用。"""
         self._is_ui_visible = is_visible
+        self.wmi_interface.set_nvml_util_enabled(bool(is_visible))
         if is_visible:
             self.request_full_status_update()

@@ -14,10 +14,14 @@ from queue import Queue
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from unittest.mock import patch
+
 from gui.qt import QApplication  # noqa: E402
 
 _APP = QApplication.instance() or QApplication([])
 
+import core.wmi_interface as wmi_module  # noqa: E402
+from config.settings import TEMP_READ_ERROR_VALUE  # noqa: E402
 from gui.curve_history import CurveEditHistory  # noqa: E402
 from core.wmi_interface import WMIWorker  # noqa: E402
 
@@ -109,6 +113,28 @@ def make_worker(gpu_temp1, gpu_temp2, power_w):
     return worker, calls
 
 
+class _FakeNvml:
+    """Records NVML call counts for the utilization-gate tests."""
+
+    def __init__(self, power_w: int, util_gpu: int):
+        self.power_calls = 0
+        self.util_calls = 0
+        self._power_w = power_w
+        self._util_gpu = util_gpu
+
+    def nvmlDeviceGetPowerUsage(self, handle):
+        self.power_calls += 1
+        return self._power_w
+
+    def nvmlDeviceGetUtilizationRates(self, handle):
+        self.util_calls += 1
+
+        class _Rates:
+            gpu = self._util_gpu
+
+        return _Rates()
+
+
 class NvmlSleepGuardTests(unittest.TestCase):
     def test_asleep_gpu_makes_no_nvml_calls(self):
         worker, calls = make_worker(0, 0, 15.0)
@@ -161,10 +187,60 @@ class NvmlSleepGuardTests(unittest.TestCase):
         worker._wmi_get_obj.gpu_temp2 = 0
         worker._get_core_sensors()  # asleep: no call, re-arm
         self.assertIsNone(worker._nvml_last_power_w)
+        # The asleep probe latch keeps the sleep state cached for up to 19
+        # further sweeps before the EC is re-read (bounded wake latency).
+        for _ in range(19):
+            worker._get_core_sensors()
         worker._wmi_get_obj.gpu_temp1 = 60
         data = worker._get_core_sensors()  # awake again: fresh reading
         self.assertIn("gpu_power_w", data)
         self.assertEqual(len(calls), 2)
+
+    def test_util_gate_skips_utilization_read(self):
+        """UI hidden: power (feed-forward) still read, utilization not."""
+        worker = WMIWorker(Queue(), "GB_WMIACPI_Get", "GB_WMIACPI_Set")
+        worker._nvml_ok = True
+        worker._nvml_handle = object()
+        worker._nvml_poll_enabled = True
+        worker._nvml_util_enabled = False
+        fake = _FakeNvml(power_w=15000, util_gpu=77)
+        with patch.object(wmi_module, "pynvml", fake):
+            power, util = worker._read_nvml_gpu()
+        self.assertEqual(power, 15.0)
+        self.assertIsNone(util)
+        self.assertEqual(fake.power_calls, 1)
+        self.assertEqual(fake.util_calls, 0)
+
+    def test_util_enabled_reads_both(self):
+        worker = WMIWorker(Queue(), "GB_WMIACPI_Get", "GB_WMIACPI_Set")
+        worker._nvml_ok = True
+        worker._nvml_handle = object()
+        fake = _FakeNvml(power_w=15000, util_gpu=77)
+        with patch.object(wmi_module, "pynvml", fake):
+            power, util = worker._read_nvml_gpu()
+        self.assertEqual((power, util), (15.0, 77))
+        self.assertEqual(fake.util_calls, 1)
+
+    def test_asleep_latch_skips_gpu_getters(self):
+        """Latched asleep sweep reads only the CPU getter and still returns
+        the exact live-asleep dict shape (downstream gates behave alike)."""
+        worker = WMIWorker(Queue(), "GB_WMIACPI_Get", "GB_WMIACPI_Set")
+        worker._gpu_asleep_latched = True
+        worker._gpu_sleep_probes_left = 19
+        calls = []
+
+        def fake_execute(obj, method_name, **kwargs):
+            calls.append(method_name)
+            return 55
+
+        worker._execute_wmi_method = fake_execute
+        data = worker._get_temperatures()
+        self.assertEqual(calls, ["getCpuTemp"])
+        self.assertEqual(
+            data,
+            {'cpu_temp': 55.0, 'gpu_temp': TEMP_READ_ERROR_VALUE, 'gpu_asleep': True},
+        )
+        self.assertEqual(worker._gpu_sleep_probes_left, 18)
 
 
 if __name__ == "__main__":

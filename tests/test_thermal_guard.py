@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core.fan_target import THERMAL_GUARDS  # noqa: E402
 from core.thermal_guard import (  # noqa: E402
-    DUTY_RAW_MAX, force_duty_percent,
+    DUTY_RAW_MAX, ThermalGuardWatchdog, force_duty_percent,
 )
 
 
@@ -51,6 +54,76 @@ class ForceDutyPercentTests(unittest.TestCase):
         for temp, percent in ((82, 40), (86, 60), (95, 80)):
             self.assertEqual(force_duty_percent(temp, percent_to_raw(percent) - 1),
                              percent)
+
+
+class _FakeGetter:
+    def __init__(self):
+        self.cpu_temp = 90.0
+        self.fixed_raw = 0
+
+    def getCpuTemp(self):
+        return self.cpu_temp
+
+    def GetFixedFanSpeed(self):
+        return self.fixed_raw
+
+
+class _FakeSetter:
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def _write(**kwargs):
+            self.calls.append(name)
+        return _write
+
+
+class WatchdogBackoffTests(unittest.TestCase):
+    """Re-forcing the same floor is throttled; a higher floor never waits."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.watchdog = ThermalGuardWatchdog(self._tmp.name)
+        self.watchdog._owns_fans = lambda: True
+        self.getter = _FakeGetter()
+        self.setter = _FakeSetter()
+        self.now = {"t": 1000.0}
+        patcher = patch("core.thermal_guard.time.monotonic",
+                        lambda: self.now["t"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_same_floor_backoff_then_reforce_after_10s(self):
+        # 90 °C, EC at 0: first poll forces the 80 % floor (6 setter calls)
+        self.assertEqual(self.watchdog._check_once(self.getter, self.setter), 80)
+        self.assertEqual(len(self.setter.calls), 6)
+        # immediate re-poll: unchanged floor -> throttled, zero writes
+        self.assertIsNone(self.watchdog._check_once(self.getter, self.setter))
+        self.assertEqual(len(self.setter.calls), 6)
+        # 10 s later: re-forced
+        self.now["t"] += 10.0
+        self.assertEqual(self.watchdog._check_once(self.getter, self.setter), 80)
+        self.assertEqual(len(self.setter.calls), 12)
+
+    def test_higher_floor_forces_inside_backoff_window(self):
+        self.getter.cpu_temp = 85.0
+        self.assertEqual(self.watchdog._check_once(self.getter, self.setter), 60)
+        self.assertEqual(len(self.setter.calls), 6)
+        self.assertIsNone(self.watchdog._check_once(self.getter, self.setter))
+        # hotter: floor rises 60 -> 80, must not wait for the window
+        self.getter.cpu_temp = 90.0
+        self.now["t"] += 1.0
+        self.assertEqual(self.watchdog._check_once(self.getter, self.setter), 80)
+        self.assertEqual(len(self.setter.calls), 12)
+
+    def test_log_rotates_at_size_cap(self):
+        path = os.path.join(self._tmp.name, "thermal_guard.log")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("x" * (self.watchdog.LOG_MAX_BYTES + 1))
+        self.watchdog._log("rotation test")
+        self.assertTrue(os.path.exists(path + ".old"))
+        self.assertLess(os.path.getsize(path), 512)
 
 
 if __name__ == "__main__":

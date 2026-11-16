@@ -151,6 +151,14 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     # 语言显示名称
     "lang_display_name_en": "English",
     "lang_display_name_zh": "中文",
+
+    # UX pass: minimum-curve notice, disabled-FF reason, apply failures,
+    # unit strings that were previously hardcoded
+    "curve_min_points_reached": "A curve needs at least {n} points",
+    "ff_disabled_not_auto": "Only available in Auto mode",
+    "fan_mode_apply_failed": "Fan mode '{mode}' rejected; previous mode kept",
+    "refresh_ms": "{ms} ms",
+    "tray_charge_percent": "{n} %",
 }
 
 # --- 默认中文翻译 ---
@@ -290,6 +298,13 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     # 语言显示名称
     "lang_display_name_en": "English",
     "lang_display_name_zh": "中文",
+
+    # UX pass additions
+    "curve_min_points_reached": "曲线至少需要 {n} 个点",
+    "ff_disabled_not_auto": "仅在自动模式下可用",
+    "fan_mode_apply_failed": "风扇模式 '{mode}' 被拒绝；已保持原模式",
+    "refresh_ms": "{ms} ms",
+    "tray_charge_percent": "{n} %",
 }
 
 # ==============================================================================

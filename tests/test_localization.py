@@ -42,6 +42,16 @@ class TranslationTableTests(unittest.TestCase):
             set(DEFAULT_CHINESE_TRANSLATIONS),
         )
 
+    def test_ux_pass_keys_exist_in_both_languages(self):
+        keys = (
+            "curve_min_points_reached", "ff_disabled_not_auto",
+            "fan_mode_apply_failed", "refresh_ms", "tray_charge_percent",
+        )
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertIn(key, DEFAULT_ENGLISH_TRANSLATIONS)
+                self.assertIn(key, DEFAULT_CHINESE_TRANSLATIONS)
+
     def test_registry_exposes_both_languages(self):
         self.assertEqual(set(_translations), {"en", "zh"})
 
