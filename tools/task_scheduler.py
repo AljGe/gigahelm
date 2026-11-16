@@ -114,6 +114,7 @@ def _get_default_watchdog_task_xml_content() -> bytes:
   </RegistrationInfo>
   <Triggers>
     <TimeTrigger>
+      <StartBoundary>2025-01-01T00:00:00</StartBoundary>
       <Repetition>
         <Interval>PT1M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
@@ -168,14 +169,16 @@ def _resolve_command_and_args(paths: PathManager, arguments: str) -> Tuple[str, 
 def _create_task(paths: PathManager, task_name: str, template_path: str,
                  default_xml_fn, arguments: str):
     """Create or update a scheduled task from an XML template file with
-    {{COMMAND}}/{{ARGUMENTS}}/{{WORKING_DIRECTORY}} placeholders."""
-    if not os.path.exists(template_path):
-        try:
-            with open(template_path, 'wb') as f:
-                f.write(default_xml_fn())
-            print(f"Default task template created at: {template_path}")
-        except IOError as e:
-            raise Exception(f"Failed to create default task template: {e}")
+    {{COMMAND}}/{{ARGUMENTS}}/{{WORKING_DIRECTORY}} placeholders.
+
+    The template is generated state, not user config: it is rewritten from
+    the embedded default on every call so a stale file can never linger
+    after a code change."""
+    try:
+        with open(template_path, 'wb') as f:
+            f.write(default_xml_fn())
+    except IOError as e:
+        raise Exception(f"Failed to write task template: {e}")
 
     try:
         with open(template_path, 'rb') as f:

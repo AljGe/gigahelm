@@ -177,8 +177,13 @@ if ($LASTEXITCODE -ne 0) { Write-Log "schtasks-failed"; exit 10 }
 # BIOS-revert watchdog: register through the app's own scheduler code so the
 # task always matches what a running app would self-heal to (1-minute tick).
 Write-Log "register-watchdog-task"
-& $python -c "import sys; sys.path.insert(0, r'$sourceRoot'); from core.path_manager import PathManager; from tools.task_scheduler import create_bios_watchdog_task; create_bios_watchdog_task(PathManager(base_dir=r'$install', executable_path=r'$install\$exeName', main_script_path=''))"
-if ($LASTEXITCODE -ne 0) { Write-Log "watchdog-register-failed"; exit 12 }
+# EAP=Continue while capturing: under Windows PowerShell 5.1, 2>&1 with
+# EAP=Stop promotes any stderr line to a terminating error.
+$ErrorActionPreference = "Continue"
+$wdOut = & $python -c "import sys; sys.path.insert(0, r'$sourceRoot'); from core.path_manager import PathManager; from tools.task_scheduler import create_bios_watchdog_task; create_bios_watchdog_task(PathManager(base_dir=r'$install', executable_path=r'$install\$exeName', main_script_path=''))" 2>&1
+$wdExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($wdExit -ne 0) { Write-Log "watchdog-register-failed: $($wdOut -join ' ')"; exit 12 }
 
 Write-Log "start-task"
 Start-ScheduledTask -TaskName $taskName
@@ -208,6 +213,9 @@ sys.exit(0 if app_instance_running() else 1)
 "@
     if ($LASTEXITCODE -ne 0) { Write-Log "start-verify-failed"; exit 11 }
 }
+# The app needs a few seconds after the mutex appears to initialize WMI and
+# write its first fan state; probing earlier races it and reads mid-transition.
+Start-Sleep -Seconds 8
 
 Write-Log "probe"
 & $python -c @"
