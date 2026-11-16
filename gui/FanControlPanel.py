@@ -8,7 +8,7 @@ the EC is currently applying plus the detail line (curve target / EC raw).
 
 from typing import Optional
 
-from .qt import QWidget, QCheckBox, QHBoxLayout, Slot
+from .qt import QWidget, QCheckBox, QHBoxLayout, Slot, Qt
 from .base_control_panel import BaseControlPanel
 from .tooltip_manager import tooltip_manager
 from core.state import AppState
@@ -73,7 +73,17 @@ class FanControlPanel(BaseControlPanel):
     def _apply_enablement(self) -> None:
         super()._apply_enablement()
         # The cycle only applies the offset in auto mode.
-        self.ff_checkbox.setEnabled(self._mode == FAN_MODE_AUTO)
+        enabled = self._mode == FAN_MODE_AUTO
+        self.ff_checkbox.setEnabled(enabled)
+        if enabled:
+            self.ff_checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, False)
+            self.ff_checkbox.setToolTip("")
+            tooltip_manager.register(self.ff_checkbox, "ff_checkbox_tooltip")
+        else:
+            # Disabled widgets only show tooltips with WA_AlwaysShowToolTips.
+            tooltip_manager.unregister(self.ff_checkbox)
+            self.ff_checkbox.setToolTip(tr("ff_disabled_not_auto"))
+            self.ff_checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
 
     def _on_live_changed(self, *_args) -> None:
         self._update_live_display()

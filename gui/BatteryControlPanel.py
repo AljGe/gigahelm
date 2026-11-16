@@ -98,9 +98,11 @@ class BatteryControlPanel(BaseControlPanel):
 
     def _update_live_display(self) -> None:
         if self.state.get_applied_charge_policy() == CHARGE_POLICY_CUSTOM:
-            self.live_value_label.setText(
-                f"{self.state.get_applied_charge_threshold()}{tr('percent_unit')}"
-            )
+            threshold = self.state.get_applied_charge_threshold()
+            if threshold < 0:
+                self.live_value_label.setText(tr("value_not_available"))
+            else:
+                self.live_value_label.setText(f"{threshold}{tr('percent_unit')}")
         else:
             self.live_value_label.setText(tr("mode_bios"))
 

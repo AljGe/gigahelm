@@ -36,7 +36,6 @@ class Dashboard(QWidget):
     """The whole page: hero cards, control column, curve card, footer."""
 
     transient_status = Signal(str, int)
-    gui_update_interval_selected = Signal(int)
 
     def __init__(
         self,
@@ -117,7 +116,7 @@ class Dashboard(QWidget):
         footer.addWidget(self.ui_refresh_label)
         self.ui_refresh_combo = QComboBox(self)
         for ms in (250, 500, 1000, 2000):
-            self.ui_refresh_combo.addItem(f"{ms} ms", ms)
+            self.ui_refresh_combo.addItem(tr("refresh_ms", ms=ms), ms)
         tooltip_manager.register(self.ui_refresh_combo, "ui_refresh_tooltip")
         footer.addWidget(self.ui_refresh_combo)
         layout.addLayout(footer)
@@ -146,7 +145,6 @@ class Dashboard(QWidget):
         self.state.notifications_enabled_changed.connect(self._on_notifications_enabled_changed)
         self.notifications_checkbox.toggled.connect(self.settings_manager.set_notifications_enabled)
 
-        self.state.active_profile_changed.connect(lambda *_: self._refresh_ui_refresh_combo())
         self.ui_refresh_combo.activated.connect(self._on_ui_refresh_selected)
 
         self.curve_card.transient_status.connect(self.transient_status.emit)
@@ -198,6 +196,8 @@ class Dashboard(QWidget):
             card.set_unit("")
             card.set_tone("muted")
             card.set_level(None)
+            # Don't pair ERR with the stale last-good RPM line.
+            card.set_footer(tr("value_not_available"))
             return
 
         card.set_value(f"{temp:.1f}")
@@ -272,6 +272,11 @@ class Dashboard(QWidget):
     @Slot()
     def _update_battery_value(self, *_args) -> None:
         threshold = self.state.get_applied_charge_threshold()
+        if threshold < 0:
+            self.battery_card.set_value(tr("value_not_available"))
+            self.battery_card.set_unit("")
+            self.battery_card.set_level(None)
+            return
         self.battery_card.set_value(f"{threshold}")
         self.battery_card.set_unit(tr("percent_unit"))
         self.battery_card.set_level(max(0.0, min(1.0, threshold / 100)))
@@ -303,8 +308,7 @@ class Dashboard(QWidget):
             self.notifications_checkbox.blockSignals(False)
 
     def _refresh_ui_refresh_combo(self) -> None:
-        profile = self.state.get_active_profile()
-        interval = int(profile.get_value("gui_update_interval_ms", 1000)) if profile else 1000
+        interval = self.state.get_gui_update_interval_ms()
         index = self.ui_refresh_combo.findData(interval)
         self.ui_refresh_combo.blockSignals(True)
         self.ui_refresh_combo.setCurrentIndex(index if index >= 0 else self.ui_refresh_combo.findData(1000))
@@ -314,8 +318,7 @@ class Dashboard(QWidget):
     def _on_ui_refresh_selected(self, index: int) -> None:
         ms = self.ui_refresh_combo.itemData(index)
         if ms:
-            self.profile_manager.set_profile_value("gui_update_interval_ms", int(ms))
-            self.gui_update_interval_selected.emit(int(ms))
+            self.settings_manager.set_gui_update_interval_ms(int(ms))
 
     # --------------------------------------------------------------- i18n ----
     def retranslate_ui(self) -> None:

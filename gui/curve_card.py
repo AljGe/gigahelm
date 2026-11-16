@@ -134,12 +134,13 @@ class CurveCard(QFrame):
         self.redo_curve_button.clicked.connect(self._redo_curve_edit)
         self.add_profile_button.clicked.connect(self._handle_add_profile_clicked)
 
-        # Window-level shortcuts; StandardKey.Redo covers Ctrl+Shift+Z and Ctrl+Y.
-        self._undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
-        self._undo_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        # Canvas-scoped shortcuts; StandardKey.Redo covers Ctrl+Shift+Z and
+        # Ctrl+Y. Widget context keeps the native undo of text fields working.
+        self._undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self.canvas)
+        self._undo_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         self._undo_shortcut.activated.connect(self._undo_curve_edit)
-        self._redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
-        self._redo_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self.canvas)
+        self._redo_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         self._redo_shortcut.activated.connect(self._redo_curve_edit)
 
         self.state.active_curve_type_changed.connect(self._on_curve_type_changed)
