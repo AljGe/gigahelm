@@ -132,6 +132,8 @@ class AppState(QObject):
     is_fan_control_panel_enabled_changed = Signal(bool)
     active_curve_type_changed = Signal(str)
     controller_status_message_changed = Signal(str)
+    # Global UI refresh cadence (ms); migrated out of per-profile storage.
+    gui_update_interval_ms_changed = Signal(int)
 
     def __init__(self, path_manager: PathManager, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -170,6 +172,9 @@ class AppState(QObject):
         self._is_fan_control_panel_enabled: bool = True
         self._active_curve_type: str = "cpu"
         self._controller_status_message: str = ""
+        # Persistent global app setting (was a per-profile key before the
+        # migration in ProfileManager.load_config).
+        self._gui_update_interval_ms: int = 1000
 
     def _set_value(self, field_name: str, value: Any, signal: Any):
         if getattr(self, field_name) != value:
@@ -289,6 +294,10 @@ class AppState(QObject):
     def get_controller_status_message(self) -> str: return self._controller_status_message
     def set_controller_status_message(self, value: str): self._set_value('_controller_status_message', value, self.controller_status_message_changed)
     controller_status_message = Property(str, get_controller_status_message, set_controller_status_message, notify=controller_status_message_changed) # type: ignore
+
+    def get_gui_update_interval_ms(self) -> int: return self._gui_update_interval_ms
+    def set_gui_update_interval_ms(self, value: int): self._set_value('_gui_update_interval_ms', value, self.gui_update_interval_ms_changed)
+    gui_update_interval_ms = Property(int, get_gui_update_interval_ms, set_gui_update_interval_ms, notify=gui_update_interval_ms_changed) # type: ignore
     
     # --- 配置文件管理方法 ---
     def get_profile(self, name: str) -> Optional[ProfileState]:

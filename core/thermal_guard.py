@@ -81,6 +81,13 @@ class ThermalGuardWatchdog(threading.Thread):
         self._duty_raw_max = duty_raw_max
         self._last_mode_path = os.path.join(base_dir, LAST_MODE_FILENAME)
         self._stop_event = threading.Event()
+        # Re-force backoff: when something keeps pushing the EC below the
+        # floor (e.g. a custom slider under the guard), re-forcing the same
+        # or a lower floor is throttled to one write per 10 s; a higher
+        # (hotter) floor forces immediately.
+        self._last_force_monotonic: float = 0.0
+        self._last_forced_floor: int = 0
+        self._owns_cache: Optional[tuple] = None
 
     def stop(self, join_s: float = 0.0) -> None:
         self._stop_event.set()
@@ -88,20 +95,39 @@ class ThermalGuardWatchdog(threading.Thread):
             self.join(timeout=join_s)
 
     # ------------------------------------------------------------- internals
+    #: Rotate thermal_guard.log to .old once it exceeds this size.
+    LOG_MAX_BYTES: int = 262144
+
     def _log(self, message: str) -> None:
         try:
-            with open(os.path.join(self._base_dir, "thermal_guard.log"),
-                      "a", encoding="utf-8") as fh:
+            path = os.path.join(self._base_dir, "thermal_guard.log")
+            try:
+                if os.path.exists(path) and os.path.getsize(path) > self.LOG_MAX_BYTES:
+                    os.replace(path, path + ".old")
+            except OSError:
+                pass
+            with open(path, "a", encoding="utf-8") as fh:
                 fh.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {message}\n")
         except OSError:
             pass
 
     def _owns_fans(self) -> bool:
+        # last_mode.state only changes on mode switches; key the read on the
+        # mtime instead of reopening the file every 2 s.
+        try:
+            mtime = os.stat(self._last_mode_path).st_mtime_ns
+        except OSError:
+            self._owns_cache = None
+            return False
+        if self._owns_cache and self._owns_cache[0] == mtime:
+            return self._owns_cache[1]
         try:
             with open(self._last_mode_path, encoding="utf-8") as fh:
-                return fh.read().strip() in OWNING_MODES
+                value = fh.read().strip() in OWNING_MODES
         except OSError:
             return False
+        self._owns_cache = (mtime, value)
+        return value
 
     def _init_com(self) -> Optional[tuple]:
         try:
@@ -148,6 +174,11 @@ class ThermalGuardWatchdog(threading.Thread):
         floor = force_duty_percent(cpu_temp, fixed_raw, self._duty_raw_max)
         if floor is None:
             return None  # hot but the EC already sits at/above the floor
+        now = time.monotonic()
+        if floor <= self._last_forced_floor and now - self._last_force_monotonic < 10.0:
+            return None  # same-or-lower floor re-forced recently: back off
+        self._last_force_monotonic = now
+        self._last_forced_floor = floor
         self._force_floor(setter, floor)
         return floor
 

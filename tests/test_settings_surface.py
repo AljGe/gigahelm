@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Settings surface: generic profile-value writes persist, and the fan card's
 feed-forward checkbox reflects and drives the active profile."""
+import json
 import sys
 import tempfile
 import unittest
@@ -35,6 +36,8 @@ class SettingsSurfaceTests(unittest.TestCase):
         self.settings = SettingsManager(self.state, self.manager)
 
     def _reload_from_disk(self):
+        # save_config() is debounced+background now; flush deterministically.
+        self.manager.save_config_sync()
         _, state, manager = _fresh_state(self.tmp)
         manager.load_config()
         return state
@@ -49,9 +52,37 @@ class SettingsSurfaceTests(unittest.TestCase):
         self.assertEqual(reloaded.get_value("gpu_power_feedforward"), False)
 
     def test_gui_interval_persists(self):
-        self.manager.set_profile_value("gui_update_interval_ms", 500)
-        reloaded = self._reload_from_disk().get_active_profile()
-        self.assertEqual(reloaded.get_value("gui_update_interval_ms"), 500)
+        # Global app setting since the migration; no longer a profile value.
+        self.settings.set_gui_update_interval_ms(500)
+        reloaded = self._reload_from_disk()
+        self.assertEqual(reloaded.get_gui_update_interval_ms(), 500)
+
+    def test_legacy_profile_interval_migrates_to_global_setting(self):
+        # A pre-migration config stores the interval only inside a profile.
+        self.manager.save_config_sync()
+        with open(self.paths.control_config, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+        config.pop("gui_update_interval_ms", None)
+        legacy_profile = config["active_profile_name"]
+        config["profiles"][legacy_profile]["gui_update_interval_ms"] = 250
+        with open(self.paths.control_config, "w", encoding="utf-8") as handle:
+            json.dump(config, handle)
+        # Fresh process: load_config must migrate the profile value (no
+        # flush here - that would rewrite a modern config over the legacy one).
+        paths = PathManager(self.tmp.name, sys.executable, __file__)
+        state = AppState(paths)
+        fresh_manager = ProfileManager(state)
+        fresh_manager.load_config()
+        self.assertEqual(state.get_gui_update_interval_ms(), 250)
+        # The next save hoists the migrated value to the top-level key.
+        fresh_manager.save_config_sync()
+        with open(self.paths.control_config, "r", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["gui_update_interval_ms"], 250)
+
+    def test_invalid_interval_values_are_ignored(self):
+        self.settings.set_gui_update_interval_ms(333)
+        self.assertEqual(self.state.get_gui_update_interval_ms(), 1000)
+        self.settings.set_gui_update_interval_ms(1000)  # no change, no save
 
     def test_notifications_flag_defaults_on_and_persists_off(self):
         self.assertTrue(self.state.get_notifications_enabled())
@@ -75,6 +106,7 @@ class FeedforwardCheckboxTests(unittest.TestCase):
         self.panel.ff_checkbox.setChecked(False)
         active = self.state.get_active_profile()
         self.assertEqual(active.get_value("gpu_power_feedforward"), False)
+        self.manager.save_config_sync()
         with open(self.paths.control_config, "r", encoding="utf-8") as handle:
             self.assertIn("gpu_power_feedforward", handle.read())
 

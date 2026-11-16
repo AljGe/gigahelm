@@ -31,8 +31,10 @@ class ConfigRecoveryTests(unittest.TestCase):
 
     def test_save_keeps_previous_config_as_backup(self):
         self.manager.load_config()
-        self.manager.save_config()
-        self.manager.save_config()
+        # save_config() is debounced/background since the perf pass; the
+        # deterministic flush is save_config_sync().
+        self.manager.save_config_sync()
+        self.manager.save_config_sync()
         self.assertTrue(os.path.exists(self.paths.control_config + ".bak"))
         with open(self.paths.control_config, "r", encoding="utf-8") as handle:
             json.load(handle)
