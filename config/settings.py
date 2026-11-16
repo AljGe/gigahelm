@@ -186,6 +186,11 @@ FAN_STALL_CYCLES: int = 4
 HOT_ALERT_TEMP_C: float = 95.0
 HOT_ALERT_RESET_C: float = 90.0
 HOT_ALERT_SUSTAINED_CYCLES: int = 8
+# NVML idle-skip: once a reading lands at/below NVML_FF_IDLE_W, stop polling
+# until the EC GPU temp reaches NVML_FF_RESUME_TEMP_C (real load) or the GPU
+# sleeps and wakes again. Measured on this machine: NVML polling pins an idle
+# RTX 3080 at P0 (~30 W) and keeps it out of D3cold.
+NVML_FF_RESUME_TEMP_C: float = 65.0
 STARTUP_ARG_MINIMIZED: str = "--minimized"
 _APP_GUID: str = "{17e0cc04-cddb-4b9b-adcc-5faa4872e054}"
 MUTEX_NAME: str = f"Global\\{APP_INTERNAL_NAME}_Mutex_{_APP_GUID}"

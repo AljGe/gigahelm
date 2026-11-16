@@ -33,6 +33,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QIcon,
     QAction,
+    QShortcut,
+    QKeySequence,
     QImage,
     QPainter,
     QColor,
