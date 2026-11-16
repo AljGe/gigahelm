@@ -4,8 +4,9 @@ Set-Location $root
 $py = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { python -m venv .venv }
 & $py -m pip install --upgrade pip
-& $py -m pip install pyinstaller PySide6 wmi pywin32
-& $py -m unittest tests.test_fan_duty tests.test_fan_ramp tests.test_fan_target tests.test_thermal_guard tests.test_system_utils tests.test_theme tests.test_localization
+& $py -m pip install pyinstaller PySide6 wmi pywin32 nvidia-ml-py
+$env:QT_QPA_PLATFORM = "offscreen"
+& $py -m unittest discover -s tests
 if ($LASTEXITCODE -ne 0) { Write-Error "unit tests failed"; exit 1 }
 & $py tools/make_icon.py
 if ($LASTEXITCODE -ne 0) { Write-Error "icon generation failed"; exit 1 }
