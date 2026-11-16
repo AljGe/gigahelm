@@ -26,11 +26,13 @@ from config.settings import (
 )
 
 class _WindowsResumeFilter(QAbstractNativeEventFilter):
-    """Collapse resume power broadcasts into one AppServices recovery."""
+    """Collapse resume power broadcasts into one AppServices recovery and
+    forward AC attach/detach (PBT_APMPOWERSTATUSCHANGE) to the app."""
 
-    def __init__(self, on_resume):
+    def __init__(self, on_resume, on_power_change=None):
         super().__init__()
         self._on_resume = on_resume
+        self._on_power_change = on_power_change
 
     def nativeEventFilter(self, eventType, message):
         try:
@@ -44,9 +46,23 @@ class _WindowsResumeFilter(QAbstractNativeEventFilter):
                 msg = ctypes.wintypes.MSG.from_address(int(message))
                 if msg.message == 0x0218 and int(msg.wParam) in (0x0007, 0x0012):
                     self._on_resume()
+                elif (msg.message == 0x0218 and int(msg.wParam) == 0x000A
+                      and self._on_power_change is not None):
+                    self._on_power_change()
         except Exception:
             pass
         return False, 0
+
+
+class _SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_byte),
+        ("BatteryFlag", ctypes.c_byte),
+        ("BatteryLifePercent", ctypes.c_byte),
+        ("Reserved1", ctypes.c_byte),
+        ("BatteryLifeTime", ctypes.c_ulong),
+        ("BatteryFullLifeTime", ctypes.c_ulong),
+    ]
 
 class MainWindow(QMainWindow):
     """主应用窗口。"""
@@ -240,8 +256,28 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is None or os.name != "nt":
             return
-        self._resume_filter = _WindowsResumeFilter(self.app_services.note_resume)
+        self._last_ac_line: Optional[bool] = None
+        self._resume_filter = _WindowsResumeFilter(self.app_services.note_resume, self._on_power_status_change)
         app.installNativeEventFilter(self._resume_filter)
+
+    def _on_power_status_change(self):
+        """PBT_APMPOWERSTATUSCHANGE: forward each actual AC attach/detach to
+        AppServices (profile binding switch + charge state re-verify)."""
+        if os.name != "nt":
+            return
+        try:
+            status = _SYSTEM_POWER_STATUS()
+            if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+                return
+            if status.ACLineStatus == 0xFF:
+                return  # unknown - keep the last known state
+            on_ac = status.ACLineStatus == 1
+            if on_ac == self._last_ac_line:
+                return  # duplicate broadcast, no transition
+            self._last_ac_line = on_ac
+            self.app_services.on_power_source_changed(on_ac)
+        except Exception:
+            pass
 
     def _start_command_poller(self):
         from tools.single_instance import (
