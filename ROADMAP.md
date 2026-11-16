@@ -5,19 +5,20 @@ Control-loop optimizations that were analyzed against SOTA fan controllers
 in the quiet-control-loop change. Each entry: why it matters, design sketch,
 effort. Ordered by expected value.
 
-## 1. NVML GPU power feed-forward
+## 1. NVML GPU power feed-forward — **shipped**
 
-- **Why:** temperature lags load by 10–30 s (heatsink time constant). The
-  shipped dT/dt boost *approximates* load from rising temperature; NVIDIA's
+- **Why:** temperature lags load by 10–30 s (heatsink time constant). NVIDIA's
   driver reports the real thing: `power.draw` and utilization via NVML. The
   dGPU is the dominant noise source under gaming load — power-based
   pre-spin reacts to load directly instead of waiting for heat to arrive.
-- **How:** optional `pynvml` dependency (graceful no-op when driver/NVML is
-  absent). Read power + utilization inside the WMI worker's temperature pass.
-  Use as a second boost channel for the GPU curve:
-  `boost_gpu = k * max(0, P_gpu - P_idle)` (same clamp idea as the dT/dt
-  boost, `PREDICT_MAX_BOOST_C`). Also gives a *better* dGPU-asleep signal
-  than the current EC-returns-0 heuristic, and a utilization % for the UI.
+- **Done:** optional `pynvml` dependency (graceful no-op when driver/NVML is
+  absent); NVML lives on the WMI worker thread with vendor-filtered device
+  enumeration; `_get_core_sensors` carries `gpu_power_w` (+utilization);
+  `_on_cycle_temps` lifts the GPU curve input by
+  `k * max(0, P_gpu - P_idle)` (30 W idle floor above video playback,
+  10 °C cap, per-profile toggle `gpu_power_feedforward`, default on).
+  NOT done here: NVML-based dGPU-asleep detection (EC-returns-0 heuristic
+  kept as primary — needs live D3cold validation) and a utilization % UI.
 - **Risks:** Optimus hybrid enumeration (pick the right NVML device);
   NVML init must live in the worker thread, not the GUI thread.
 - **Effort:** M. Per-profile opt-in toggle recommended.

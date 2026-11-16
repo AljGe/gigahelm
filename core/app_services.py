@@ -18,6 +18,7 @@ from .fan_duty import percent_to_raw
 from .fan_ramp import next_fan_percent, next_target
 from .fan_target import select_fan_target
 from .thermal_guard import ThermalGuardWatchdog
+from .gpu_power import feedforward_offset
 from tools.localization import tr
 from config.settings import (
     FAN_MODE_BIOS, FAN_MODE_AUTO, FAN_MODE_CUSTOM, FAN_MODE_UNKNOWN,
@@ -27,6 +28,7 @@ from config.settings import (
     INIT_APPLIED_PERCENTAGE, TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
     SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_STATUS, SET_CHARGE_STOP,
     DEFAULT_TARGET_HYSTERESIS_PERCENT, FAN_STALL_CYCLES,
+    NVML_FF_IDLE_W, NVML_FF_K_C_PER_W, NVML_FF_MAX_BOOST_C,
     LAST_MODE_FILENAME, HEARTBEAT_FILENAME, WMIInternalSignal
 )
 
@@ -583,6 +585,7 @@ class AppServices(QObject):
             gpu_asleep = bool(data.get("gpu_asleep", False))
             fan1_rpm = data.get("fan1_rpm", RPM_READ_ERROR_VALUE)
             fan2_rpm = data.get("fan2_rpm", RPM_READ_ERROR_VALUE)
+            gpu_power_w = data.get("gpu_power_w")
             if self._is_ui_visible:
                 self.state.set_cpu_temp(cpu_temp)
                 self.state.set_gpu_temp(gpu_temp)
@@ -594,7 +597,15 @@ class AppServices(QObject):
                 base_target = 0
                 custom_speed = int(self._current_profile.get_custom_fan_speed())
             else:
-                base_target = self.auto_temp_controller.theoretical_target(cpu_temp, gpu_temp)
+                # NVML feed-forward: lift the GPU curve input by a power-based
+                # offset so the fan reacts while heat is still travelling to
+                # the heatsink. Unknown power / asleep dGPU -> no offset.
+                gpu_ff_temp = gpu_temp
+                if (gpu_temp != TEMP_READ_ERROR_VALUE
+                        and self._current_profile.get_value("gpu_power_feedforward", True)):
+                    gpu_ff_temp = gpu_temp + feedforward_offset(
+                        gpu_power_w, NVML_FF_IDLE_W, NVML_FF_K_C_PER_W, NVML_FF_MAX_BOOST_C)
+                base_target = self.auto_temp_controller.theoretical_target(cpu_temp, gpu_ff_temp)
                 custom_speed = 0
 
             raw_target = select_fan_target(
