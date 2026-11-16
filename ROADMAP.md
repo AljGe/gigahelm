@@ -17,8 +17,11 @@ effort. Ordered by expected value.
   `_on_cycle_temps` lifts the GPU curve input by
   `k * max(0, P_gpu - P_idle)` (30 W idle floor above video playback,
   10 °C cap, per-profile toggle `gpu_power_feedforward`, default on).
-  NOT done here: NVML-based dGPU-asleep detection (EC-returns-0 heuristic
-  kept as primary — needs live D3cold validation) and a utilization % UI.
+  NOT done here: NVML-based dGPU-asleep detection — **dropped** after live
+  validation (PR #13 probes): the EC-returns-0 heuristic tracked every
+  sleep/wake transition correctly, so NVML detection adds nothing. The
+  utilization % UI shipped separately (GPU card footer shows fan RPM plus
+  NVML utilization when known).
 - **Risks:** Optimus hybrid enumeration (pick the right NVML device);
   NVML init must live in the worker thread, not the GUI thread.
 - **Effort:** M. Per-profile opt-in toggle recommended.
