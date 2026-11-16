@@ -25,7 +25,8 @@ class ConfigRecoveryTests(unittest.TestCase):
         self.manager.load_config()
         backups = glob.glob(self.paths.control_config + ".corrupt-*")
         self.assertEqual(len(backups), 1)
-        self.assertIn("Config 1", self.state.get_profile_names())
+        self.assertIn("Tuned AC", self.state.get_profile_names())
+        self.assertIn("Tuned Battery", self.state.get_profile_names())
         self.assertIn("corrupt", self.state.get_controller_status_message().lower())
 
     def test_save_keeps_previous_config_as_backup(self):
