@@ -32,6 +32,7 @@ class ProfileManager(QObject):
         self.state.set_language(config_data.get("language", "en"))
         self.state.set_theme_mode(config_data.get("theme_mode", DEFAULT_THEME_MODE))
         self.state.set_start_on_boot(config_data.get("start_on_boot", False))
+        self.state.set_notifications_enabled(config_data.get("notifications_enabled", True))
         self.state.set_profile_on_ac(config_data.get("profile_on_ac", ""))
         self.state.set_profile_on_battery(config_data.get("profile_on_battery", ""))
         self.state.window_geometry = config_data.get("window_geometry")
@@ -61,6 +62,7 @@ class ProfileManager(QObject):
             "language": self.state.get_language(),
             "theme_mode": self.state.get_theme_mode(),
             "start_on_boot": self.state.get_start_on_boot(),
+            "notifications_enabled": self.state.get_notifications_enabled(),
             "profile_on_ac": self.state.get_profile_on_ac(),
             "profile_on_battery": self.state.get_profile_on_battery(),
             "active_profile_name": self.state.get_active_profile_name(),
@@ -153,6 +155,14 @@ class ProfileManager(QObject):
         if active_profile and hasattr(active_profile, f"set_{key}"):
             setter = getattr(active_profile, f"set_{key}")
             setter(value)
+            self.save_config()
+
+    def set_profile_value(self, key: str, value: Any):
+        """Write a profile key that has no typed property (e.g.
+        gpu_power_feedforward) and persist the config."""
+        active_profile = self.get_active_profile()
+        if active_profile:
+            active_profile.set_value(key, value)
             self.save_config()
 
     def set_curve_data(self, curve_type: str, data: list):

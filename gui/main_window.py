@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
 
         self.theme.changed.connect(self._on_theme_changed)
         self.dashboard.transient_status.connect(self.set_transient_status)
+        self.dashboard.gui_update_interval_selected.connect(self.gui_update_timer.setInterval)
         self.status_clear_timer.timeout.connect(self._clear_transient_status)
 
     def init_tray_icon(self):
@@ -365,6 +366,9 @@ class MainWindow(QMainWindow):
 
     def _show_cli_notification(self, title_key: str, message: str, critical: bool = False):
         if not self.tray_icon:
+            return
+        # Fault and thermal alerts (critical=True) ignore the preference.
+        if not critical and not self.state.get_notifications_enabled():
             return
         icon = QSystemTrayIcon.MessageIcon.Critical if critical else QSystemTrayIcon.MessageIcon.Information
         self.tray_icon.showMessage(tr(title_key), message, icon, 3000)
