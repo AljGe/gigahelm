@@ -33,7 +33,7 @@ except ImportError:
     pynvml = None
 
 from .battery_health import get_battery_health
-from tools.system_utils import set_thread_priority_above_normal
+from tools.system_utils import set_thread_priority_above_normal, get_battery_percent
 
 from config.settings import (
     WMI_NAMESPACE, DEFAULT_WMI_GET_CLASS, DEFAULT_WMI_SET_CLASS,
@@ -462,6 +462,7 @@ class WMIWorker(threading.Thread):
             data["charge_threshold"] = threshold
         data["ec_fixed_fan_speed_raw"] = self._read_optional_int(GET_FIXED_FAN_SPEED)
         data["battery_health"] = get_battery_health(self._read_optional_int(GET_BATTERY_HEALTH))
+        data["battery_percent"] = get_battery_percent()
         cycles = [value for value in (
             self._read_optional_int(GET_BATT_CYC),
             self._read_optional_int(GET_BATT_CYC1),

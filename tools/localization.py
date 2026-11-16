@@ -74,6 +74,8 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "profile_menu_activate": "Activate",
     "profile_menu_save": "Save current settings here",
     "profile_menu_manage": "Rename or delete…",
+    "profile_overwrite_confirm_title": "Overwrite profile",
+    "profile_overwrite_confirm_msg": "Replace the saved settings of '{name}' with the current settings?",
 
     # 主题
     "theme_mode_system": "System",
@@ -147,6 +149,8 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     # 托盘菜单
     "tray_menu_show_hide": "Show / Hide",
     "tray_menu_quit": "Quit",
+    "tray_still_running_title": "Still running",
+    "tray_still_running_msg": "Closed to the tray - fan control keeps running. Click the tray icon to reopen the window.",
 
     # 语言显示名称
     "lang_display_name_en": "English",
@@ -221,6 +225,8 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "profile_menu_activate": "启用",
     "profile_menu_save": "保存当前设置到此处",
     "profile_menu_manage": "重命名或删除…",
+    "profile_overwrite_confirm_title": "覆盖配置方案",
+    "profile_overwrite_confirm_msg": "用当前设置替换 '{name}' 的已保存设置吗？",
 
     # 主题
     "theme_mode_system": "跟随系统",
@@ -294,6 +300,8 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     # 托盘菜单
     "tray_menu_show_hide": "显示 / 隐藏",
     "tray_menu_quit": "退出",
+    "tray_still_running_title": "仍在运行",
+    "tray_still_running_msg": "已最小化到托盘——风扇控制仍在运行。点击托盘图标可重新打开窗口。",
 
     # 语言显示名称
     "lang_display_name_en": "English",

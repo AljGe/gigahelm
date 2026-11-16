@@ -124,6 +124,7 @@ QFrame#segmented QPushButton { background: transparent; border: none; border-rad
     padding: 8px 18px; font-size: 9pt; font-weight: 600; color: $text_muted; }
 QFrame#segmented QPushButton:hover { color: $text; }
 QFrame#segmented QPushButton:checked { background: $accent; color: $accent_text; }
+QFrame#segmented QPushButton:focus { color: $text; }
 QFrame#segmented QPushButton:disabled { color: $border_strong; }
 
 QPushButton { background: $surface_alt; color: $text; border: 1px solid $border;
@@ -132,9 +133,11 @@ QPushButton:hover { background: $hover; border-color: $border_strong; }
 QPushButton:pressed { background: $surface_alt; }
 QPushButton:checked { background: $accent; color: $accent_text; border-color: $accent; }
 QPushButton:disabled { color: $text_muted; }
+/* Keyboard focus must be visible: QSS styling drops the native focus rect. */
+QPushButton:focus { border-color: $accent; }
 QPushButton#profileChip { border-radius: 12px; padding: 4px 12px; font-size: 9pt; color: $text_muted; }
 QPushButton#profileChip:checked { background: $accent; color: $accent_text; border-color: $accent; font-weight: 600; }
-QPushButton#addProfileButton { border-radius: 12px; padding: 2px 10px; font-size: 11pt; color: $text_muted; }
+QPushButton#addProfileButton { border-radius: 12px; padding: 5px 14px; font-size: 11pt; color: $text_muted; }
 QPushButton#resetCurveButton { background: transparent; color: $text_muted; }
 QPushButton#resetCurveButton:hover { color: $warn; border-color: $warn; }
 QPushButton#dangerButton { color: $danger; }
@@ -150,6 +153,7 @@ QSlider::handle:horizontal:disabled { border-color: $border_strong; background: 
 
 QLabel#valuePill { background: $surface_alt; border: 1px solid $border; border-radius: 6px;
     padding: 2px 8px; font-size: 10pt; font-weight: 600; color: $text; }
+QLabel#valuePill:disabled { color: $text_muted; border-color: $border; background: $surface_alt; }
 EditableLabel > QLineEdit { background: $surface_alt; border: 1px solid $accent; border-radius: 6px;
     padding: 2px 6px; color: $text; }
 
