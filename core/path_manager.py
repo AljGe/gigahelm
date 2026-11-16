@@ -29,8 +29,9 @@ class PathManager:
         # --- Icon ---
         self.app_icon = os.path.join(self.base_dir, 'app_icon.ico')
 
-        # --- Task Scheduler template ---
+        # --- Task Scheduler templates ---
         self.task_template = os.path.join(self.base_dir, 'task_template.xml')
+        self.watchdog_task_template = os.path.join(self.base_dir, 'watchdog_task_template.xml')
 
     def is_running_as_script(self) -> bool:
         """Determine from the executable name whether we run as a script."""

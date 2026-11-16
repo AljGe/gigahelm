@@ -1,12 +1,13 @@
-# Requires elevation. Hands fans back to BIOS, replaces C:\Tools\GFBC, re-registers the startup task.
+# Requires elevation. Hands fans back to BIOS, replaces C:\Tools\Gigahelm, re-registers the startup + BIOS-revert-watchdog tasks.
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $false
-$taskName = "FanBatteryControl Startup Task"
-$install = "C:\Tools\GFBC"
+$taskName = "Gigahelm Startup Task"
+$install = "C:\Tools\Gigahelm"
+$exeName = "Gigahelm.exe"
 $sourceRoot = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $sourceRoot "dist\main"
+$dist = Join-Path $sourceRoot "dist\Gigahelm"
 $python = Join-Path $sourceRoot ".venv\Scripts\python.exe"
-$log = Join-Path $env:TEMP "gfb-deploy.log"
+$log = Join-Path $env:TEMP "gigahelm-deploy.log"
 
 function Write-Log([string]$Message) {
     $line = "$(Get-Date -Format o) $Message"
@@ -27,7 +28,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit 2
 }
 
-if (-not (Test-Path (Join-Path $dist "main.exe"))) {
+if (-not (Test-Path (Join-Path $dist $exeName))) {
     Write-Log "build-missing"
     exit 3
 }
@@ -57,8 +58,8 @@ if ($existing) {
     Write-Log "task-missing"
 }
 
-$needle = "C:\Tools\GFBC\main.exe"
-$procs = @(Get-CimInstance Win32_Process -Filter "Name = 'main.exe'" -ErrorAction SilentlyContinue)
+$needle = Join-Path $install $exeName
+$procs = @(Get-CimInstance Win32_Process -Filter "Name = '$exeName'" -ErrorAction SilentlyContinue)
 foreach ($proc in $procs) {
     $path = [string]$proc.ExecutablePath
     $cmd = [string]$proc.CommandLine
@@ -113,8 +114,8 @@ $filled = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Starts the FanBatteryControl application on user logon and system wake.</Description>
-    <Author>FanBatteryControl</Author>
+    <Description>Starts the Gigahelm application on user logon and system wake.</Description>
+    <Author>Gigahelm</Author>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -158,9 +159,9 @@ $userXml      <LogonType>InteractiveToken</LogonType>
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>C:\Tools\GFBC\main.exe</Command>
+      <Command>C:\Tools\Gigahelm\Gigahelm.exe</Command>
       <Arguments>--minimized</Arguments>
-      <WorkingDirectory>C:\Tools\GFBC</WorkingDirectory>
+      <WorkingDirectory>C:\Tools\Gigahelm</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>
@@ -173,9 +174,40 @@ Write-Log "register-task"
 & schtasks /Create /TN "$taskName" /XML "$filledPath" /F
 if ($LASTEXITCODE -ne 0) { Write-Log "schtasks-failed"; exit 10 }
 
+# BIOS-revert watchdog: register through the app's own scheduler code so the
+# task always matches what a running app would self-heal to (1-minute tick).
+Write-Log "register-watchdog-task"
+& $python -c "import sys; sys.path.insert(0, r'$sourceRoot'); from core.path_manager import PathManager; from tools.task_scheduler import create_bios_watchdog_task; create_bios_watchdog_task(PathManager(base_dir=r'$install', executable_path=r'$install\$exeName', main_script_path=''))"
+if ($LASTEXITCODE -ne 0) { Write-Log "watchdog-register-failed"; exit 12 }
+
 Write-Log "start-task"
 Start-ScheduledTask -TaskName $taskName
-Start-Sleep -Seconds 8
+# Deploy race: the previous instance may still be dying and holding the
+# single-instance mutex, making the new instance exit silently. Poll for the
+# mutex; if it never appears, retry the task start once before failing.
+& $python -c @"
+import sys, time
+sys.path.insert(0, r'$sourceRoot')
+from tools.bios_watchdog import app_instance_running
+deadline = time.time() + 20
+while time.time() < deadline:
+    if app_instance_running():
+        sys.exit(0)
+    time.sleep(1)
+sys.exit(1)
+"@
+if ($LASTEXITCODE -ne 0) {
+    Write-Log "start-retry"
+    Start-ScheduledTask -TaskName $taskName
+    Start-Sleep -Seconds 8
+    & $python -c @"
+import sys
+sys.path.insert(0, r'$sourceRoot')
+from tools.bios_watchdog import app_instance_running
+sys.exit(0 if app_instance_running() else 1)
+"@
+    if ($LASTEXITCODE -ne 0) { Write-Log "start-verify-failed"; exit 11 }
+}
 
 Write-Log "probe"
 & $python -c @"

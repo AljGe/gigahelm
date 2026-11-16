@@ -5,10 +5,10 @@
 Manager "End task", OOM, power loss). In that state the EC keeps whatever
 fan mode was last written - potentially SetFixedFanStatus=1 with a low
 duty and nothing left to manage it. This module is called by the hidden
-scheduled task ("GFBC BIOS Revert Watchdog", every 5 minutes + at logon)
-via `main.exe --revert-bios`:
+scheduled task ("Gigahelm BIOS Revert Watchdog", every 1 minute; the app
+re-registers it at startup if missing) via `main.exe --revert-bios`:
 
-* if ``last_mode.state`` says GFBC owns fan control (auto/custom) and no
+* if ``last_mode.state`` says the app owns fan control (auto/custom) and no
   app instance holds the single-instance mutex, hand fans back to BIOS,
   write ``bios`` back to ``last_mode.state`` and exit 0;
 * otherwise (app running, BIOS mode, missing file) skip silently.
@@ -94,7 +94,7 @@ def run_bios_revert_watchdog(
     try:
         last_mode = read_owning_mode(base_dir)
         if last_mode not in OWNING_MODES:
-            log(f"skip: GFBC does not own fan control (last_mode={last_mode or '<empty>'})")
+            log(f"skip: the app does not own fan control (last_mode={last_mode or '<empty>'})")
             return 0
         if (probe_running or app_instance_running)():
             log("skip: an app instance is running")

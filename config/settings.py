@@ -7,9 +7,9 @@ from typing import List, Dict, Any
 # ==============================================================================
 # App info
 # ==============================================================================
-APP_NAME: str = "FanBatteryControl"
-APP_ORGANIZATION_NAME: str = "FanBatteryControl" # Used by Qt for settings paths
-APP_INTERNAL_NAME: str = "FanBatteryControl" # Used for mutex, task name, etc.
+APP_NAME: str = "Gigahelm"
+APP_ORGANIZATION_NAME: str = "Gigahelm" # Used by Qt for settings paths
+APP_INTERNAL_NAME: str = "Gigahelm" # Used for mutex, task names, etc.
 
 # ==============================================================================
 # Default configuration values
@@ -170,6 +170,8 @@ MIN_POINTS_FOR_INTERPOLATION: int = 2
 # Task Scheduler / single instance
 # ==============================================================================
 TASK_SCHEDULER_NAME: str = f"{APP_INTERNAL_NAME} Startup Task"
+BIOS_WATCHDOG_TASK_NAME: str = f"{APP_INTERNAL_NAME} BIOS Revert Watchdog"
+REVERT_BIOS_ARG: str = "--revert-bios"
 STARTUP_ARG_MINIMIZED: str = "--minimized"
 _APP_GUID: str = "{17e0cc04-cddb-4b9b-adcc-5faa4872e054}"
 MUTEX_NAME: str = f"Global\\{APP_INTERNAL_NAME}_Mutex_{_APP_GUID}"

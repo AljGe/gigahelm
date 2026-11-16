@@ -14,11 +14,11 @@ Community continuation of [Ixmoon/Gigabyte-Fan-Battery-Center](https://github.co
 | Gigabyte AORUS 15P XD | Upstream's reference machine; constants carried over, **not re-tested** | same as YD |
 | Anything else | Untested — the default preset applies with a warning; verify before trusting it | see below |
 
-Run `main.exe --diagnose` on your machine to dump which WMI methods your EC exposes, the current sensor readbacks, and which preset resolved. Attach that JSON when filing issues on untested models.
+Run `Gigahelm.exe --diagnose` on your machine to dump which WMI methods your EC exposes, the current sensor readbacks, and which preset resolved. Attach that JSON when filing issues on untested models.
 
 ## Features over upstream
 
-- **BIOS-revert watchdog** — a hidden scheduled task (`GFBC BIOS Revert Watchdog`, every 5 min) hands fans back to BIOS if the app owned fan control but was hard-killed (Task Manager, OSM, power loss). Hard kills bypass every in-process cleanup; this is the net.
+- **BIOS-revert watchdog** — a hidden scheduled task (`Gigahelm BIOS Revert Watchdog`, every 1 min) hands fans back to BIOS if the app owned fan control but was hard-killed (Task Manager, OOM, power loss). Hard kills bypass every in-process cleanup; this is the net. The app re-registers the task at startup if it is missing, and `tools/deploy_gfb.ps1` creates it on install.
 - **Async control loop** — the fan heartbeat no longer blocks the GUI thread on WMI round-trips; a hung COM call can freeze or kill the loop silently no more (8 s watchdog rebuilds the WMI worker).
 - **EC write throttling** — duty writes happen on change plus a ~12 s control-flag keepalive instead of 6 EC writes every 1.5 s (~99 % fewer writes).
 - **Quiet control loop** — asymmetric temperature hysteresis (spin-ups apply at once, spin-downs need a sustained ~5 °C drop), rate-limited spin-ups with heat bypass, median+EMA temperature conditioning, and a dT/dt predictive boost that pre-spins fans when temperature rises fast. Curve editor shows the EC spin floor honestly.
@@ -30,7 +30,7 @@ Run `main.exe --diagnose` on your machine to dump which WMI methods your EC expo
 
 ## Install
 
-Grab `gigahelm-windows.zip` from [Releases](../../releases), unzip anywhere (`C:\Tools\GFBC` is the documented layout), run `main.exe`, confirm the UAC prompt, tick **Start on Boot**.
+Grab `gigahelm-windows.zip` from [Releases](../../releases), unzip anywhere (`C:\Tools\Gigahelm` is the documented layout), run `Gigahelm.exe`, confirm the UAC prompt, tick **Start on Boot**.
 
 Requires: Windows 10/11, a Gigabyte laptop exposing the GB WMI EC interface, and (unless you follow the next section) whatever driver stack shipped with it.
 
@@ -42,23 +42,23 @@ You do **not** need GCC installed. The app only needs the `WmiAcpi` kernel servi
 2. Set `HKLM\SYSTEM\CurrentControlSet\Services\WmiAcpi` → `MofImagePath` = `\SystemRoot\SysWOW64\acpimof.dll`.
 3. Reboot.
 
-Beware: uninstalling GCC itself **deletes** `SysWOW64\acpimof.dll` and that registry value — back both up first. GFBC keeps working after an unclean uninstall only until the next reboot.
+Beware: uninstalling GCC itself **deletes** `SysWOW64\acpimof.dll` and that registry value — back both up first. Gigahelm keeps working after an unclean uninstall only until the next reboot.
 
 ## CLI
 
 | Command | Effect |
 |---|---|
-| `main.exe --minimized` | Start hidden in tray (what the boot task runs) |
-| `main.exe --profile "Gaming"` | Switch profile in the running instance |
-| `main.exe --charge-policy custom --charge-threshold 80` | Set battery charge limit (60–100) |
-| `main.exe --revert-bios` | Watchdog entry point: hand fans to BIOS if the app is gone (requires admin) |
-| `main.exe --diagnose` | Write `diagnose_report.json` for issue reports (requires admin) |
+| `Gigahelm.exe --minimized` | Start hidden in tray (what the boot task runs) |
+| `Gigahelm.exe --profile "Gaming"` | Switch profile in the running instance |
+| `Gigahelm.exe --charge-policy custom --charge-threshold 80` | Set battery charge limit (60–100) |
+| `Gigahelm.exe --revert-bios` | Watchdog entry point: hand fans to BIOS if the app is gone (requires admin) |
+| `Gigahelm.exe --diagnose` | Write `diagnose_report.json` for issue reports (requires admin) |
 
 ## Building from source
 
 ```powershell
-tools/build_gfb.ps1     # creates .venv, installs deps, runs tests, builds dist\main
-tools/deploy_gfb.ps1    # (elevated) stop app, robocopy dist to C:\Tools\GFBC, re-register boot task, probe
+tools/build_gfb.ps1     # creates .venv, installs deps, runs the full test suite, builds dist\Gigahelm
+tools/deploy_gfb.ps1    # (elevated) stop app, robocopy dist to C:\Tools\Gigahelm, re-register boot + watchdog tasks, probe
 ```
 
 CI runs the unit tests and build on every push; tagged `v*` releases publish a zip + SHA256.

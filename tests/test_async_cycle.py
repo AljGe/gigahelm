@@ -11,6 +11,10 @@ from core.path_manager import PathManager
 from core.state import AppState
 from core.app_services import AppServices, FLAG_REASSERT_EVERY_CYCLES
 from config.settings import WMIInternalSignal, FAN_MODE_AUTO, FAN_MODE_BIOS
+from gui.qt import QApplication
+
+# QTimer.isActive() needs an event dispatcher; tests run offscreen.
+_APP = QApplication.instance() or QApplication([])
 
 SILENT_CPU = [[50, 0], [60, 15], [70, 25], [80, 44], [85, 59], [90, 77], [95, 100]]
 
@@ -138,6 +142,16 @@ class AsyncCycleTests(unittest.TestCase):
         self.svc._on_cycle_watchdog()
         self.assertFalse(self.svc._cycle_in_flight)
         self.assertTrue(self.svc.wmi_interface.running)
+
+    def test_wmi_recovery_restarts_controller_loop(self):
+        # recover_after_resume() stops the timer and returns early when the WMI
+        # rebuild fails; a later _recover_wmi_if_due() must restart the control
+        # loop (timer running + a live EC write), not just fire one orphan cycle.
+        self.svc.wmi_interface = FakeWMI({"cpu_temp": 62.0, "gpu_temp": -1.0, "gpu_asleep": True})
+        self.svc.controller_timer.stop()  # state left behind by a failed resume recovery
+        self.svc._recover_wmi_if_due()
+        self.assertTrue(self.svc.controller_timer.isActive())
+        self.assertTrue(self.svc.wmi_interface.applies)  # one live control cycle ran
 
 
 if __name__ == "__main__":

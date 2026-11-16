@@ -214,6 +214,11 @@ class AppServices(QObject):
             self._arm_software_ramp()
             profile = self._current_profile
             if profile and self.state.get_applied_fan_mode() in (FAN_MODE_AUTO, FAN_MODE_CUSTOM):
+                # recover_after_resume() stops the timer and returns early when the
+                # WMI rebuild fails; this recovery is then the only chance to bring
+                # the control loop back, so the timer must be restarted here too.
+                if not self.controller_timer.isActive():
+                    self.controller_timer.start()
                 self._perform_control_cycle()
         else:
             self.state.set_controller_status_message(tr("wmi_error"))

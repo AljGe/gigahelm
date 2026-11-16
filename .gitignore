@@ -24,4 +24,5 @@ control_config.json
 last_mode.state
 languages.json
 task_template.xml
+watchdog_task_template.xml
 *.log

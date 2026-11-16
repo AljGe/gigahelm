@@ -9,7 +9,10 @@ import sys
 import subprocess
 import tempfile
 from typing import Tuple
-from config.settings import TASK_SCHEDULER_NAME, STARTUP_ARG_MINIMIZED
+from config.settings import (
+    TASK_SCHEDULER_NAME, BIOS_WATCHDOG_TASK_NAME,
+    STARTUP_ARG_MINIMIZED, REVERT_BIOS_ARG,
+)
 from core.path_manager import PathManager
 from .localization import tr
 
@@ -42,8 +45,8 @@ def _get_default_task_xml_content() -> bytes:
     xml_str = r'''<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Starts the FanBatteryControl application on user logon and system wake.</Description>
-    <Author>FanBatteryControl</Author>
+    <Description>Starts the Gigahelm application on user logon and system wake.</Description>
+    <Author>Gigahelm</Author>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -96,45 +99,96 @@ def _get_default_task_xml_content() -> bytes:
 '''
     return b'\xff\xfe' + xml_str.encode('utf-16-le')
 
-def create_startup_task(paths: PathManager):
-    """
-    Create or update the Windows task using the external XML template and
-    canonical paths from PathManager.
-    """
-    xml_path = paths.task_template
+def _get_default_watchdog_task_xml_content() -> bytes:
+    """Return the BIOS-revert watchdog task XML (UTF-16-LE with BOM).
 
-    if not os.path.exists(xml_path):
+    A 1-minute repetition tick: if the app hard-died while owning fan
+    control, this bounds the exposure to at most one minute. Hidden, no
+    execution time limit concerns (a run takes well under a second).
+    """
+    xml_str = r'''<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Safety net: hands fans back to BIOS if Gigahelm owned fan control but was hard-killed (crash, OOM, power loss).</Description>
+    <Author>Gigahelm</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{COMMAND}}</Command>
+      <Arguments>{{ARGUMENTS}}</Arguments>
+      <WorkingDirectory>{{WORKING_DIRECTORY}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+'''
+    return b'\xff\xfe' + xml_str.encode('utf-16-le')
+
+def _resolve_command_and_args(paths: PathManager, arguments: str) -> Tuple[str, str]:
+    """Command + arguments for a scheduled task, per script/packaged mode."""
+    if paths.is_running_as_script():
+        # Script mode: python.exe "main.py" <arguments>
+        return sys.executable, f'"{paths.main_script_path}" {arguments}'
+    # Packaged mode: the .exe itself
+    return paths.executable_path, arguments
+
+def _create_task(paths: PathManager, task_name: str, template_path: str,
+                 default_xml_fn, arguments: str):
+    """Create or update a scheduled task from an XML template file with
+    {{COMMAND}}/{{ARGUMENTS}}/{{WORKING_DIRECTORY}} placeholders."""
+    if not os.path.exists(template_path):
         try:
-            default_xml_bytes = _get_default_task_xml_content()
-            with open(xml_path, 'wb') as f:
-                f.write(default_xml_bytes)
-            print(f"Default task template created at: {xml_path}")
+            with open(template_path, 'wb') as f:
+                f.write(default_xml_fn())
+            print(f"Default task template created at: {template_path}")
         except IOError as e:
             raise Exception(f"Failed to create default task template: {e}")
 
     try:
-        with open(xml_path, 'rb') as f:
-            xml_template_bytes = f.read()
-        xml_template = xml_template_bytes.decode('utf-16')
+        with open(template_path, 'rb') as f:
+            xml_template = f.read().decode('utf-16')
     except IOError as e:
         raise Exception(f"Failed to read task template file: {e}")
 
-    # Get all path info from PathManager instead of guessing
-    if paths.is_running_as_script():
-        # Script mode
-        command = sys.executable # python.exe
-        arguments = f'"{paths.main_script_path}" {STARTUP_ARG_MINIMIZED}'
-    else:
-        # Packaged mode
-        command = paths.executable_path # main.exe
-        arguments = STARTUP_ARG_MINIMIZED
-        
-    working_dir = paths.base_dir
+    command, resolved_arguments = _resolve_command_and_args(paths, arguments)
 
     final_xml_content_str = xml_template.replace("{{COMMAND}}", _xml_escape(command))
-    final_xml_content_str = final_xml_content_str.replace("{{ARGUMENTS}}", _xml_escape(arguments))
-    final_xml_content_str = final_xml_content_str.replace("{{WORKING_DIRECTORY}}", _xml_escape(working_dir))
-    
+    final_xml_content_str = final_xml_content_str.replace("{{ARGUMENTS}}", _xml_escape(resolved_arguments))
+    final_xml_content_str = final_xml_content_str.replace("{{WORKING_DIRECTORY}}", _xml_escape(paths.base_dir))
+
     final_xml_bytes = b'\xff\xfe' + final_xml_content_str.encode('utf-16-le')
 
     temp_path = ""
@@ -142,22 +196,48 @@ def create_startup_task(paths: PathManager):
         with tempfile.NamedTemporaryFile(mode='wb', suffix=".xml", delete=False) as temp_file:
             temp_path = temp_file.name
             temp_file.write(final_xml_bytes)
-        
-        success, output = _run_schtasks(['/Create', '/TN', TASK_SCHEDULER_NAME, '/XML', temp_path, '/F'])
-        
+
+        success, output = _run_schtasks(['/Create', '/TN', task_name, '/XML', temp_path, '/F'])
+
         if not success:
-            raise Exception(tr("task_scheduler_error_msg", command=f"Create {TASK_SCHEDULER_NAME}", error=output))
+            raise Exception(tr("task_scheduler_error_msg", command=f"Create {task_name}", error=output))
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
+def _delete_task(task_name: str):
+    """Delete a scheduled task; a missing task is not an error."""
+    success, output = _run_schtasks(['/Delete', '/TN', task_name, '/F'])
+    if not success and "ERROR: The system cannot find the file specified." not in output:
+        raise Exception(tr("task_scheduler_error_msg", command=f"Delete {task_name}", error=output))
+
+def _is_task_registered(task_name: str) -> bool:
+    """Check whether a scheduled task is registered in the Task Scheduler."""
+    success, _ = _run_schtasks(['/Query', '/TN', task_name])
+    return success
+
+def create_startup_task(paths: PathManager):
+    """Create or update the app's startup task (logon + wake, --minimized)."""
+    _create_task(paths, TASK_SCHEDULER_NAME, paths.task_template,
+                 _get_default_task_xml_content, STARTUP_ARG_MINIMIZED)
+
 def delete_startup_task():
     """Delete the app's startup task from the Windows Task Scheduler."""
-    success, output = _run_schtasks(['/Delete', '/TN', TASK_SCHEDULER_NAME, '/F'])
-    if not success and "ERROR: The system cannot find the file specified." not in output:
-        raise Exception(tr("task_scheduler_error_msg", command=f"Delete {TASK_SCHEDULER_NAME}", error=output))
+    _delete_task(TASK_SCHEDULER_NAME)
 
 def is_startup_task_registered() -> bool:
     """Check whether the app's startup task is registered in the Task Scheduler."""
-    success, _ = _run_schtasks(['/Query', '/TN', TASK_SCHEDULER_NAME])
-    return success
+    return _is_task_registered(TASK_SCHEDULER_NAME)
+
+def create_bios_watchdog_task(paths: PathManager):
+    """Create or update the hidden BIOS-revert watchdog task (1-minute tick, --revert-bios)."""
+    _create_task(paths, BIOS_WATCHDOG_TASK_NAME, paths.watchdog_task_template,
+                 _get_default_watchdog_task_xml_content, REVERT_BIOS_ARG)
+
+def delete_bios_watchdog_task():
+    """Delete the BIOS-revert watchdog task from the Windows Task Scheduler."""
+    _delete_task(BIOS_WATCHDOG_TASK_NAME)
+
+def is_bios_watchdog_task_registered() -> bool:
+    """Check whether the BIOS-revert watchdog task is registered in the Task Scheduler."""
+    return _is_task_registered(BIOS_WATCHDOG_TASK_NAME)

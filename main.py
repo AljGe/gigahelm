@@ -65,12 +65,15 @@ from gui.qt import QApplication, QMessageBox, QCoreApplication
 
 from config.settings import (
     APP_NAME, APP_ORGANIZATION_NAME, APP_INTERNAL_NAME, STARTUP_ARG_MINIMIZED,
-    COMMAND_CLI_ACTION, CHARGE_POLICY_BIOS, CHARGE_POLICY_CUSTOM,
+    REVERT_BIOS_ARG, COMMAND_CLI_ACTION, CHARGE_POLICY_BIOS, CHARGE_POLICY_CUSTOM,
     MIN_CHARGE_PERCENT, MAX_CHARGE_PERCENT
 )
 from tools.localization import load_translations, tr, set_language, _translations_loaded
 from tools.system_utils import is_admin, run_as_admin
-from tools.task_scheduler import create_startup_task, is_startup_task_registered
+from tools.task_scheduler import (
+    create_startup_task, is_startup_task_registered,
+    create_bios_watchdog_task, is_bios_watchdog_task_registered,
+)
 from tools.bios_watchdog import run_bios_revert_watchdog
 from tools.single_instance import (
     check_single_instance, release_mutex, write_hwnd_to_shared_memory
@@ -95,7 +98,7 @@ def _parse_cli_arguments(argv: list[str]) -> Tuple[argparse.Namespace, Optional[
     parser.add_argument("--show-mode", type=str, choices=["show", "notify", "silent"], default=None)
     parser.add_argument("--charge-policy", type=str, choices=[CHARGE_POLICY_BIOS, CHARGE_POLICY_CUSTOM], default=None)
     parser.add_argument("--charge-threshold", type=int, default=None)
-    parser.add_argument("--revert-bios", action="store_true", dest="revert_bios")
+    parser.add_argument(REVERT_BIOS_ARG, action="store_true", dest="revert_bios")
     parser.add_argument("--diagnose", action="store_true", dest="diagnose")
 
     try:
@@ -283,6 +286,14 @@ def main():
                 create_startup_task(path_manager)
             except Exception as boot_heal_error:
                 print(f"Failed to auto-repair startup task: {boot_heal_error}", file=sys.stderr)
+
+        # BIOS-revert watchdog: the hard-kill safety net. Register it whenever
+        # it is missing (independent of Start on Boot) - the app is elevated here.
+        if os.name == "nt" and not is_bios_watchdog_task_registered():
+            try:
+                create_bios_watchdog_task(path_manager)
+            except Exception as watchdog_heal_error:
+                print(f"Failed to register BIOS-revert watchdog task: {watchdog_heal_error}", file=sys.stderr)
 
         set_language(app_state.get_language())
         
