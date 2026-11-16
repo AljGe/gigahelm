@@ -12,6 +12,7 @@ from typing import List, Optional, Any, Dict, Tuple, cast
 
 from core.interpolation import PchipInterpolator, linspace, clip, interp
 from core.profile_manager import ProfileManager
+from core.fan_target import THERMAL_GUARDS
 from config.settings import (
     MAX_TEMP_C, MIN_FAN_PERCENT, MAX_FAN_PERCENT,
     MIN_CURVE_POINTS, MIN_POINTS_FOR_INTERPOLATION, TEMP_READ_ERROR_VALUE,
@@ -80,16 +81,16 @@ class LightweightCurveCanvas(QWidget):
         self._on_active_profile_changed(self.state.get_active_profile())
         self.set_active_curve(self.state.get_active_curve_type())
         self.update_temp_indicators(self.state.get_cpu_temp(), self.state.get_gpu_temp())
-        self.setEnabled(self.state.get_is_fan_control_panel_enabled())
 
     # ---------------------------------------------------------------- setup ---
     def _connect_signals(self):
-        """订阅AppState和ProfileState的信号。"""
+        """订阅AppState和ProfileState的信号。Enablement is owned by CurveCard
+        (curve editing edits the profile, so it stays available in BIOS mode);
+        this widget deliberately does not hook is_fan_control_panel_enabled."""
         self.state.active_profile_changed.connect(self._on_active_profile_changed)
         self.state.active_curve_type_changed.connect(self.set_active_curve)
         self.state.cpu_temp_changed.connect(lambda t: self.update_temp_indicators(cpu_temp=t))
         self.state.gpu_temp_changed.connect(lambda t: self.update_temp_indicators(gpu_temp=t))
-        self.state.is_fan_control_panel_enabled_changed.connect(self.setEnabled)
 
     @Slot(ProfileState)
     def _on_active_profile_changed(self, profile: Optional[ProfileState]):
@@ -191,6 +192,7 @@ class LightweightCurveCanvas(QWidget):
             bg_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             self._draw_background(bg_painter)
             self._draw_grid_and_labels(bg_painter)
+            self._draw_guard_floor(bg_painter)
             bg_painter.end()
 
         painter.drawPixmap(0, 0, self._background_pixmap)
@@ -208,6 +210,24 @@ class LightweightCurveCanvas(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(self.theme.palette().surface_alt))
         painter.drawRoundedRect(self._plot_area, _PLOT_RADIUS, _PLOT_RADIUS)
+
+    def _draw_guard_floor(self, painter: QPainter):
+        """Dashed floor line the EC controller enforces no matter what the
+        drawn curve promises (core/fan_target.THERMAL_GUARDS). Cached into
+        the background pixmap: it only moves with palette/geometry changes.
+        """
+        if not THERMAL_GUARDS:
+            return
+        palette = self.theme.palette()
+        pen = QPen(QColor(palette.danger), 1.5, Qt.PenStyle.DashLine)
+        painter.save()
+        painter.setClipPath(self._plot_clip_path())
+        painter.setPen(pen)
+        # Below the first threshold the floor is 0 %, so the line starts there.
+        points = [self._data_to_widget_coords(t, m) for t, m in THERMAL_GUARDS]
+        points.append(self._data_to_widget_coords(MAX_TEMP_C, THERMAL_GUARDS[-1][1]))
+        painter.drawPolyline(QPolygonF(points))
+        painter.restore()
 
     def _axis_temperatures(self) -> List[int]:
         min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
@@ -323,13 +343,16 @@ class LightweightCurveCanvas(QWidget):
     def _indicator_entries(self) -> List[Tuple[str, str]]:
         """(text, border colour) for each live CPU/GPU temperature marker."""
         palette = self.theme.palette()
+        min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
         entries: List[Tuple[str, str]] = []
         pairs = (
             ('cpu', 'CPU', self.state.get_cpu_temp(), palette.dot_cpu),
             ('gpu', 'GPU', self.state.get_gpu_temp(), palette.dot_gpu),
         )
         for curve_type, label, temp, color in pairs:
-            if temp == TEMP_READ_ERROR_VALUE or not self.get_curve_data(curve_type):
+            # Same guard as the crosshair lines: no badge for temps the
+            # plot does not cover, so the two never disagree.
+            if temp == TEMP_READ_ERROR_VALUE or temp < min_temp or not self.get_curve_data(curve_type):
                 continue
             speed = self._get_target_speed_for_indicator(temp, curve_type)
             if speed == -1:

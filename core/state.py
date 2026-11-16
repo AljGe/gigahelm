@@ -124,6 +124,7 @@ class AppState(QObject):
     ec_fixed_fan_speed_raw_changed = Signal(int)
     battery_health_changed = Signal(int)
     battery_cycles_changed = Signal(int)
+    battery_percent_changed = Signal(int)
     applied_fan_mode_changed = Signal(str)
     applied_fan_speed_percent_changed = Signal(int)
     auto_fan_target_speed_percent_changed = Signal(int)
@@ -164,6 +165,7 @@ class AppState(QObject):
         self._ec_fixed_fan_speed_raw: int = -1
         self._battery_health: int = -1
         self._battery_cycles: int = -1
+        self._battery_percent: int = -1
         self._applied_fan_mode: str = "auto"
         self._applied_fan_speed_percent: int = 0
         self._auto_fan_target_speed_percent: int = 0
@@ -261,6 +263,10 @@ class AppState(QObject):
     def get_battery_cycles(self) -> int: return self._battery_cycles
     def set_battery_cycles(self, value: int): self._set_value('_battery_cycles', value, self.battery_cycles_changed)
     battery_cycles = Property(int, get_battery_cycles, set_battery_cycles, notify=battery_cycles_changed) # type: ignore
+
+    def get_battery_percent(self) -> int: return self._battery_percent
+    def set_battery_percent(self, value: int): self._set_value('_battery_percent', value, self.battery_percent_changed)
+    battery_percent = Property(int, get_battery_percent, set_battery_percent, notify=battery_percent_changed) # type: ignore
 
     
     def get_applied_fan_mode(self) -> str: return self._applied_fan_mode

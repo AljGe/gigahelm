@@ -83,6 +83,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QToolTip,
     QStackedLayout,
+    QLayout,
+    QLayoutItem,
     QDialog,
     QDialogButtonBox
 )

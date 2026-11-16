@@ -138,6 +138,7 @@ class Dashboard(QWidget):
         self.state.applied_charge_policy_changed.connect(self._update_battery_value)
         self.state.battery_health_changed.connect(self._update_battery_footer)
         self.state.battery_cycles_changed.connect(self._update_battery_footer)
+        self.state.battery_percent_changed.connect(self._on_battery_percent_changed)
 
         self.state.start_on_boot_changed.connect(self._on_start_on_boot_changed)
         self.start_on_boot_checkbox.toggled.connect(self.settings_manager.set_start_on_boot)
@@ -159,6 +160,7 @@ class Dashboard(QWidget):
         self._update_fan_card()
         self._update_battery_value()
         self._update_battery_footer()
+        self._on_battery_percent_changed(self.state.get_battery_percent())
         self._on_start_on_boot_changed(self.state.get_start_on_boot())
         self._on_notifications_enabled_changed(self.state.get_notifications_enabled())
         self._refresh_ui_refresh_combo()
@@ -275,11 +277,18 @@ class Dashboard(QWidget):
         if threshold < 0:
             self.battery_card.set_value(tr("value_not_available"))
             self.battery_card.set_unit("")
-            self.battery_card.set_level(None)
             return
         self.battery_card.set_value(f"{threshold}")
         self.battery_card.set_unit(tr("percent_unit"))
-        self.battery_card.set_level(max(0.0, min(1.0, threshold / 100)))
+
+    @Slot(int)
+    def _on_battery_percent_changed(self, percent: int) -> None:
+        """The level bar tracks the *current* charge; the big value stays the
+        charge limit (the control it mirrors)."""
+        if percent < 0:
+            self.battery_card.set_level(None)
+            return
+        self.battery_card.set_level(max(0.0, min(1.0, percent / 100.0)))
 
     @Slot()
     def _update_battery_footer(self, *_args) -> None:
