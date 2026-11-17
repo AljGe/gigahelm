@@ -21,7 +21,7 @@ from gui.qt import QApplication  # noqa: E402
 _APP = QApplication.instance() or QApplication([])
 
 import core.wmi_interface as wmi_module  # noqa: E402
-from config.settings import TEMP_READ_ERROR_VALUE  # noqa: E402
+from config.settings import TEMP_READ_ERROR_VALUE, GPU_SLEEP_PROBE_EVERY_N_SWEEPS  # noqa: E402
 from gui.curve_history import CurveEditHistory  # noqa: E402
 from core.wmi_interface import WMIWorker  # noqa: E402
 
@@ -144,6 +144,7 @@ class NvmlSleepGuardTests(unittest.TestCase):
         self.assertEqual(calls, [])
         # the guard stays re-armed for the post-wake reading
         self.assertIsNone(worker._nvml_last_power_w)
+        self.assertIsNone(worker._nvml_power_ema)
         self.assertFalse(worker._nvml_idle_paused)
 
     def test_poll_disabled_makes_no_nvml_calls(self):
@@ -185,14 +186,14 @@ class NvmlSleepGuardTests(unittest.TestCase):
         worker._get_core_sensors()  # paused, no call
         worker._wmi_get_obj.gpu_temp1 = 0
         worker._wmi_get_obj.gpu_temp2 = 0
-        worker._get_core_sensors()  # asleep: no call, re-arm
+        worker._get_core_sensors()  # asleep: no call, latch engages
         self.assertIsNone(worker._nvml_last_power_w)
-        # The asleep probe latch keeps the sleep state cached for up to 19
-        # further sweeps before the EC is re-read (bounded wake latency).
-        for _ in range(19):
+        # The latch skips the GPU getters for N-1 sweeps, then re-probes:
+        # a real wake is caught within a few seconds instead of ~12-20 s.
+        for _ in range(GPU_SLEEP_PROBE_EVERY_N_SWEEPS - 1):
             worker._get_core_sensors()
-        worker._wmi_get_obj.gpu_temp1 = 60
-        data = worker._get_core_sensors()  # awake again: fresh reading
+        worker._wmi_get_obj.gpu_temp1 = 70
+        data = worker._get_core_sensors()  # probe sees the wake: fresh reading
         self.assertIn("gpu_power_w", data)
         self.assertEqual(len(calls), 2)
 
@@ -222,11 +223,23 @@ class NvmlSleepGuardTests(unittest.TestCase):
         self.assertEqual(fake.util_calls, 1)
 
     def test_asleep_latch_skips_gpu_getters(self):
-        """Latched asleep sweep reads only the CPU getter and still returns
-        the exact live-asleep dict shape (downstream gates behave alike)."""
+        """Latched asleep sweeps read only the CPU getter and return the
+        exact live-asleep dict shape; the Nth sweep re-probes the GPU."""
         worker = WMIWorker(Queue(), "GB_WMIACPI_Get", "GB_WMIACPI_Set")
         worker._gpu_asleep_latched = True
-        worker._gpu_sleep_probes_left = 19
+        worker._gpu_probe_skip_left = GPU_SLEEP_PROBE_EVERY_N_SWEEPS
+
+        class _GetObj:
+            def getCpuTemp(self):
+                return 55
+
+            def getGpuTemp1(self):
+                return 0
+
+            def getGpuTemp2(self):
+                return 0
+
+        worker._wmi_get_obj = _GetObj()
         calls = []
 
         def fake_execute(obj, method_name, **kwargs):
@@ -234,13 +247,21 @@ class NvmlSleepGuardTests(unittest.TestCase):
             return 55
 
         worker._execute_wmi_method = fake_execute
+        for _ in range(GPU_SLEEP_PROBE_EVERY_N_SWEEPS - 1):
+            data = worker._get_temperatures()
+            self.assertEqual(
+                data,
+                {'cpu_temp': 55.0, 'gpu_temp': TEMP_READ_ERROR_VALUE, 'gpu_asleep': True},
+            )
+        # Nth sweep: re-probe. The fake getters report 55 degC -> latch clears.
         data = worker._get_temperatures()
-        self.assertEqual(calls, ["getCpuTemp"])
         self.assertEqual(
-            data,
-            {'cpu_temp': 55.0, 'gpu_temp': TEMP_READ_ERROR_VALUE, 'gpu_asleep': True},
+            calls,
+            ["getCpuTemp"] * (GPU_SLEEP_PROBE_EVERY_N_SWEEPS - 1)
+            + ["getCpuTemp", "getGpuTemp1", "getGpuTemp2"],
         )
-        self.assertEqual(worker._gpu_sleep_probes_left, 18)
+        self.assertEqual(data, {'cpu_temp': 55.0, 'gpu_temp': 55.0, 'gpu_asleep': False})
+        self.assertEqual(worker._gpu_probe_skip_left, 0)
 
 
 if __name__ == "__main__":

@@ -40,8 +40,10 @@ BATTERY_CODE_POLICIES: Dict[int, str] = {0: "bios", 1: "custom", 4: "custom"}
 
 # --- 默认配置文件设置 ---
 # 定义了 *每个* 配置文件的结构和默认值
-DEFAULT_CPU_FAN_TABLE: List[List[int]] = [[50, 0], [60, 15], [70, 25], [80, 40], [85, 60], [90, 80], [95, 100]]
-DEFAULT_GPU_FAN_TABLE: List[List[int]] = [[40, 0], [55, 15], [65, 25], [70, 40], [75, 60], [80, 80], [85, 100]]
+# EC floor rule: percent_to_raw maps every 1-24 % request to the 25 %
+# minimum-spin duty, so points between 0 and 25 are fiction - use 0 or >= 25.
+DEFAULT_CPU_FAN_TABLE: List[List[int]] = [[50, 0], [60, 25], [70, 25], [80, 40], [85, 60], [90, 80], [95, 100]]
+DEFAULT_GPU_FAN_TABLE: List[List[int]] = [[40, 0], [55, 0], [65, 25], [70, 40], [75, 60], [80, 80], [85, 100]]
 DEFAULT_FAN_MODE: str = FAN_MODE_AUTO
 DEFAULT_CUSTOM_FAN_SPEED: int = 30 # 百分比
 DEFAULT_CHARGE_POLICY: str = CHARGE_POLICY_BIOS
@@ -50,9 +52,6 @@ DEFAULT_CHARGE_THRESHOLD: int = 80 # 百分比
 # --- 默认控制逻辑和时序 (每个配置文件) ---
 DEFAULT_GUI_UPDATE_INTERVAL_MS: int = 1000 # GUI刷新状态的频率
 DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS: int = 1500 # 在自动模式下调整风扇速度朝向目标的频率
-DEFAULT_FAN_HYSTERESIS_PERCENT: int = 5 # 触发目标重新计算所需的温度变化
-DEFAULT_MIN_ADJUSTMENT_STEP: int = 1 # 每个调整间隔的最小风扇速度变化
-DEFAULT_MAX_ADJUSTMENT_STEP: int = 5 # 每个调整间隔的最大风扇速度变化
 DEFAULT_TARGET_HYSTERESIS_PERCENT: int = 2 # 目标速度变化小于该值时沿用旧目标，避免 1% 抖动
 
 # --- 默认曲线绘制和UI外观 (每个配置文件) ---
@@ -75,9 +74,6 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "battery_charge_threshold": DEFAULT_CHARGE_THRESHOLD,
     "gpu_power_feedforward": True,
     "controller_update_interval_ms": DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS,
-    "fan_hysteresis_percent": DEFAULT_FAN_HYSTERESIS_PERCENT,
-    "min_adjustment_step": DEFAULT_MIN_ADJUSTMENT_STEP,
-    "max_adjustment_step": DEFAULT_MAX_ADJUSTMENT_STEP,
     "min_display_temp_c": DEFAULT_MIN_DISPLAY_TEMP_C,
     "curve_point_picker_radius": DEFAULT_CURVE_POINT_PICKER_RADIUS,
     "spline_points": DEFAULT_SPLINE_POINTS,
@@ -92,15 +88,18 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
 # The shipped profile set (this machine's bench-tuned curves). A config with
 # no profiles (fresh install, deleted config) regenerates these, so an
 # accidental reset loses nothing that a restart can't restore.
+# EC floor rule: the AORUS 15P YD stalls below raw duty 57 (= 25 %), and
+# percent_to_raw maps every 1-24 % request onto that same 25 % duty, so curve
+# points between 0 and 25 are fiction - author every point as 0 or >= 25.
 AC_CPU_FAN_TABLE: List[List[int]] = [
-    [50, 0], [55, 0], [60, 0], [65, 0], [68, 15], [70, 25], [72, 35],
+    [50, 0], [55, 0], [60, 0], [65, 0], [68, 25], [72, 35],
     [74, 45], [76, 60], [78, 75], [80, 85], [82, 88], [84, 90], [88, 95], [95, 95],
 ]
 AC_GPU_FAN_TABLE: List[List[int]] = [
-    [40, 0], [55, 15], [65, 25], [73, 35], [78, 53], [83, 74], [89, 99],
+    [40, 0], [55, 0], [65, 25], [73, 35], [78, 53], [83, 74], [89, 99],
 ]
 BATT_CPU_FAN_TABLE: List[List[int]] = [
-    [50, 0], [55, 0], [60, 20], [63, 35], [66, 45], [70, 55], [73, 65],
+    [50, 0], [55, 0], [60, 25], [63, 35], [66, 45], [70, 55], [73, 65],
     [75, 70], [77, 75], [80, 80], [83, 85], [86, 90], [90, 95], [95, 95],
 ]
 
@@ -191,6 +190,15 @@ CHARGE_WATCH_INTERVAL_MS: int = 60_000
 NVML_FF_IDLE_W: float = 30.0
 NVML_FF_K_C_PER_W: float = 0.4
 NVML_FF_MAX_BOOST_C: float = 10.0
+# NVML power readings flap tick-to-tick at moderate load; an unfiltered
+# offset pumps the fans through the steep GPU curve segments. EMA over the
+# worker's readings (~0.7 Hz) smooths the offset without delaying spin-up.
+NVML_FF_EMA_ALPHA: float = 0.34
+# After the idle-skip resumes (GPU crossed NVML_FF_RESUME_TEMP_C), the full
+# 10 degC offset would land in one write - a step from the 25 % floor duty to
+# mid curve. Cap the offset for this many cycles while it eases in.
+NVML_FF_RESUME_SOFT_CYCLES: int = 4
+NVML_FF_RESUME_SOFT_CAP_C: float = 3.0
 INIT_APPLIED_PERCENTAGE: int = -1
 
 # ==============================================================================
@@ -235,6 +243,15 @@ HOT_ALERT_SUSTAINED_CYCLES: int = 8
 # pinned-idle draw (40 W) while the feed-forward offset floor stays at 30 W.
 NVML_IDLE_SKIP_W: float = 40.0
 NVML_FF_RESUME_TEMP_C: float = 65.0
+# Control-path temperature EMA (core/app_services): EC temps are integers and
+# curve knees rise 3-5 %/degC, so raw temps wobble the target every tick.
+# alpha 0.5 -> one-tick lag at the 1.5 s control cadence; raw temps still feed
+# the UI, hot-alert, and fault detection.
+TEMP_SMOOTH_ALPHA: float = 0.5
+# While the dGPU is latched asleep, re-probe the EC GPU sensors every Nth
+# sweep instead of parking for 19 (~12-20 s blind after a real wake). EC
+# register reads never touch NVML, so D3cold is unaffected.
+GPU_SLEEP_PROBE_EVERY_N_SWEEPS: int = 3
 STARTUP_ARG_MINIMIZED: str = "--minimized"
 _APP_GUID: str = "{17e0cc04-cddb-4b9b-adcc-5faa4872e054}"
 MUTEX_NAME: str = f"Global\\{APP_INTERNAL_NAME}_Mutex_{_APP_GUID}"

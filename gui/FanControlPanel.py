@@ -13,6 +13,7 @@ from .base_control_panel import BaseControlPanel
 from .tooltip_manager import tooltip_manager
 from core.state import AppState
 from core.profile_manager import ProfileManager
+from core.fan_duty import effective_percent
 from config.settings import FAN_MODE_AUTO, FAN_MODE_CUSTOM, FAN_MODE_UNKNOWN
 from tools.localization import tr
 
@@ -104,14 +105,18 @@ class FanControlPanel(BaseControlPanel):
             return
 
         if mode == FAN_MODE_AUTO:
-            self.live_value_label.setText(f"{applied}{tr('percent_unit')}")
+            self.live_value_label.setText(
+                f"{effective_percent(applied)}{tr('percent_unit')}")
             self.live_line_label.setText(tr(
                 "fan_display_auto_format",
-                target=self.state.get_auto_fan_target_speed_percent(),
+                target=effective_percent(self.state.get_auto_fan_target_speed_percent()),
                 raw=raw,
             ))
         elif mode == FAN_MODE_CUSTOM:
-            self.live_value_label.setText(f"{applied}{tr('percent_unit')}")
+            # percent_to_raw clamps 1-24 % to the EC's 25 % minimum-spin
+            # duty; display the duty the fans actually get.
+            self.live_value_label.setText(
+                f"{effective_percent(applied)}{tr('percent_unit')}")
             self.live_line_label.setText(tr("fan_display_custom_format", raw=raw))
         else:
             self.live_value_label.setText(tr("mode_bios"))

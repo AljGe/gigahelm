@@ -21,6 +21,7 @@ from .tooltip_manager import tooltip_manager
 from core.state import AppState
 from core.profile_manager import ProfileManager
 from core.settings_manager import SettingsManager
+from core.fan_duty import effective_percent
 from tools.localization import tr
 from config.settings import (
     APP_NAME, APP_VERSION, MAX_TEMP_C, TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
@@ -255,7 +256,9 @@ class Dashboard(QWidget):
             self.fan_card.set_unit("")
             self.fan_card.set_level(None)
         else:
-            applied = self.state.get_applied_fan_speed_percent()
+            # percent_to_raw clamps 1-24 % to the EC's 25 % minimum-spin duty;
+            # display the duty the fans actually get, not the requested one.
+            applied = effective_percent(self.state.get_applied_fan_speed_percent())
             self.fan_card.set_value(f"{applied}")
             self.fan_card.set_unit(tr("percent_unit"))
             self.fan_card.set_level(max(0.0, min(1.0, applied / 100)))
@@ -267,7 +270,7 @@ class Dashboard(QWidget):
         raw = tr("value_not_available") if raw_value < 0 else str(raw_value)
         self.fan_card.set_footer(tr(
             "stat_fan_footer_format",
-            target=self.state.get_auto_fan_target_speed_percent(),
+            target=effective_percent(self.state.get_auto_fan_target_speed_percent()),
             raw=raw,
         ))
 

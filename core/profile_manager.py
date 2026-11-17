@@ -6,6 +6,7 @@ This class encapsulates loading, saving, creating, renaming, and activating prof
 import os
 import json
 import copy
+import hashlib
 import shutil
 import sys
 import tempfile
@@ -38,6 +39,19 @@ class ProfileManager(QObject):
         self._write_thread: Optional[threading.Thread] = None
         self._resave_pending = False
         self._resave_needed.connect(self._save_now)
+        # Clobber guard: SHA256 of control_config.json as last seen on disk.
+        # When the file changed underneath us (external editors, the bench),
+        # our own save would overwrite those edits with stale memory - skip
+        # the save and adopt the file instead (policy: disk wins).
+        self._loaded_config_hash: Optional[str] = None
+
+    @staticmethod
+    def _file_hash(path: str) -> Optional[str]:
+        try:
+            with open(path, 'rb') as fh:
+                return hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            return None
 
     def load_config(self):
         """Load the config from the JSON file and populate state."""
@@ -80,6 +94,7 @@ class ProfileManager(QObject):
         if active_profile_name not in self.state.get_profile_names():
             active_profile_name = self.state.get_profile_names()[0] if self.state.get_profile_names() else next(iter(DEFAULT_PROFILES))
         self.state.set_active_profile_name(active_profile_name)
+        self._loaded_config_hash = self._file_hash(self.config_path)
 
     def _collect_config_data(self) -> Dict[str, Any]:
         """Snapshot of everything that goes into the config JSON."""
@@ -108,11 +123,27 @@ class ProfileManager(QObject):
         if self._write_thread is not None and self._write_thread.is_alive():
             self._resave_pending = True  # writer re-arms itself when done
             return
+        if self._external_change_pending():
+            return
         config_data = self._collect_config_data()
         self._write_thread = threading.Thread(
             target=self._write_config_file, args=(config_data,),
             daemon=True, name="ConfigWriter")
         self._write_thread.start()
+
+    def _external_change_pending(self) -> bool:
+        """True when control_config.json changed on disk since our last
+        load/write: adopt the file instead of saving over it (disk wins),
+        then re-apply the active profile. False when nothing to adopt."""
+        current = self._file_hash(self.config_path)
+        if (self._loaded_config_hash is None or current is None
+                or current == self._loaded_config_hash):
+            return False
+        print("Warning: control_config.json changed externally; adopting "
+              "disk state instead of saving (clobber guard).", file=sys.stderr)
+        self.load_config()  # re-records the hash
+        self.reload_and_apply_active_profile()
+        return True
 
     def _write_config_file(self, config_data: Dict[str, Any]) -> None:
         """Atomic JSON write; safe on a non-GUI thread (the status-message
@@ -132,6 +163,7 @@ class ProfileManager(QObject):
                 os.fsync(f.fileno())
             os.replace(temp_path, self.config_path)
             temp_path = ""
+            self._loaded_config_hash = self._file_hash(self.config_path)
         except Exception as e:
             if temp_path:
                 try: os.remove(temp_path)
@@ -151,6 +183,8 @@ class ProfileManager(QObject):
         self._save_timer.stop()
         if self._write_thread is not None and self._write_thread.is_alive():
             self._write_thread.join(timeout=2.0)
+        if self._external_change_pending():
+            return
         self._write_config_file(self._collect_config_data())
 
     def _read_config_file(self) -> Dict[str, Any]:
