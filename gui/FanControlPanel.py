@@ -50,6 +50,13 @@ class FanControlPanel(BaseControlPanel):
         ff_row.addWidget(self.ff_checkbox)
         ff_row.addStretch(1)
         self.layout().addLayout(ff_row)
+        split_row = QHBoxLayout()
+        split_row.setContentsMargins(0, 0, 0, 0)
+        self.split_checkbox = QCheckBox(tr("split_fan_checkbox_label"), self)
+        tooltip_manager.register(self.split_checkbox, "split_fan_checkbox_tooltip")
+        split_row.addWidget(self.split_checkbox)
+        split_row.addStretch(1)
+        self.layout().addLayout(split_row)
 
     def _connect_live_signals(self) -> None:
         self.state.applied_fan_mode_changed.connect(self._on_live_changed)
@@ -59,6 +66,9 @@ class FanControlPanel(BaseControlPanel):
         self.ff_checkbox.toggled.connect(self._on_ff_toggled)
         self.state.active_profile_changed.connect(lambda *_: self._refresh_ff_checkbox())
         self._refresh_ff_checkbox()
+        self.split_checkbox.toggled.connect(self._on_split_toggled)
+        self.state.active_profile_changed.connect(lambda *_: self._refresh_split_checkbox())
+        self._refresh_split_checkbox()
 
     @Slot(bool)
     def _on_ff_toggled(self, checked: bool) -> None:
@@ -70,6 +80,17 @@ class FanControlPanel(BaseControlPanel):
         self.ff_checkbox.blockSignals(True)
         self.ff_checkbox.setChecked(checked)
         self.ff_checkbox.blockSignals(False)
+
+    @Slot(bool)
+    def _on_split_toggled(self, checked: bool) -> None:
+        self.profile_manager.set_profile_value("split_fan_control", checked)
+
+    def _refresh_split_checkbox(self) -> None:
+        profile = self.state.get_active_profile()
+        checked = bool(profile.get_value("split_fan_control", True)) if profile else True
+        self.split_checkbox.blockSignals(True)
+        self.split_checkbox.setChecked(checked)
+        self.split_checkbox.blockSignals(False)
 
     def _apply_enablement(self) -> None:
         super()._apply_enablement()
@@ -85,6 +106,17 @@ class FanControlPanel(BaseControlPanel):
             tooltip_manager.unregister(self.ff_checkbox)
             self.ff_checkbox.setToolTip(tr("ff_disabled_not_auto"))
             self.ff_checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
+        # Split control is auto-mode-only: custom mode drives both channels
+        # with one slider, BIOS owns the fans.
+        self.split_checkbox.setEnabled(enabled)
+        if enabled:
+            self.split_checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, False)
+            self.split_checkbox.setToolTip("")
+            tooltip_manager.register(self.split_checkbox, "split_fan_checkbox_tooltip")
+        else:
+            tooltip_manager.unregister(self.split_checkbox)
+            self.split_checkbox.setToolTip(tr("split_disabled_not_auto"))
+            self.split_checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
 
     def _on_live_changed(self, *_args) -> None:
         self._update_live_display()
@@ -125,3 +157,4 @@ class FanControlPanel(BaseControlPanel):
     def retranslate_ui(self) -> None:
         super().retranslate_ui()
         self.ff_checkbox.setText(tr("ff_checkbox_label"))
+        self.split_checkbox.setText(tr("split_fan_checkbox_label"))

@@ -114,15 +114,16 @@ class AutoTemperatureController(QObject):
         clipped_speed = cast(float, clip(final_speed, MIN_FAN_PERCENT, MAX_FAN_PERCENT))
         return int(round(clipped_speed))
 
-    def _calculate_theoretical_target(self, cpu_temp: float, gpu_temp: float) -> int:
-        """根据当前温度和曲线计算出理论上的目标风扇速度。"""
-        cpu_target = self._interpolate_single_curve(cpu_temp, self._cpu_curve_data, self._cpu_interpolator)
-        gpu_target = self._interpolate_single_curve(gpu_temp, self._gpu_curve_data, self._gpu_interpolator)
-        # 最终目标取CPU和GPU目标中较高的一个，以确保充分散热
-        return max(cpu_target, gpu_target)
+    def cpu_curve_target(self, cpu_temp: float) -> int:
+        """CPU 曲线在给定温度下的目标速度。"""
+        return self._interpolate_single_curve(cpu_temp, self._cpu_curve_data, self._cpu_interpolator)
+
+    def gpu_curve_target(self, gpu_temp: float) -> int:
+        """GPU 曲线在给定温度下的目标速度。"""
+        return self._interpolate_single_curve(gpu_temp, self._gpu_curve_data, self._gpu_interpolator)
 
     def theoretical_target(self, cpu_temp: float, gpu_temp: float) -> int:
         """返回曲线理论目标。不步进、不迟滞。"""
-        target = self._calculate_theoretical_target(cpu_temp, gpu_temp)
+        target = max(self.cpu_curve_target(cpu_temp), self.gpu_curve_target(gpu_temp))
         self._last_theoretical_target = target
         return target
