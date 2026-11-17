@@ -24,7 +24,7 @@ THEME_MODES = (THEME_MODE_SYSTEM, THEME_MODE_DARK, THEME_MODE_LIGHT)
 DEFAULT_THEME_MODE: str = THEME_MODE_SYSTEM
 
 # --- 版本 (页脚显示) ---
-APP_VERSION: str = "2.2.0"
+APP_VERSION: str = "2.3.0"
 
 # --- 核心状态常量 ---
 FAN_MODE_BIOS = "bios"
@@ -73,6 +73,7 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "battery_charge_policy": DEFAULT_CHARGE_POLICY,
     "battery_charge_threshold": DEFAULT_CHARGE_THRESHOLD,
     "gpu_power_feedforward": True,
+    "split_fan_control": True,
     "controller_update_interval_ms": DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS,
     "min_display_temp_c": DEFAULT_MIN_DISPLAY_TEMP_C,
     "curve_point_picker_radius": DEFAULT_CURVE_POINT_PICKER_RADIUS,

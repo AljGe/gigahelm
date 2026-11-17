@@ -16,7 +16,7 @@ from .auto_temp_controller import AutoTemperatureController
 from .state import AppState, ProfileState
 from .fan_duty import percent_to_raw, effective_percent
 from .fan_ramp import next_fan_percent, next_target
-from .fan_target import guard_floor, select_fan_target
+from .fan_target import guard_floor, select_fan_target, select_per_fan_targets
 from .thermal_guard import ThermalGuardWatchdog
 from .gpu_power import feedforward_offset
 from tools.localization import tr
@@ -84,10 +84,13 @@ class AppServices(QObject):
         self._mode_generation = 0
         self._cycle_generation = 0
         self._auto_target: Optional[int] = None
+        # GPU channel's own auto target / zero-release streak (split mode).
+        self._gpu_auto_target: Optional[int] = None
         # Consecutive zero raw targets (fan_ramp.next_target zero-release
         # debounce); EMA-smoothed control temps; engaged thermal-guard floors
         # per sensor (fan_target.guard_floor engage/release hysteresis).
         self._zero_streak = 0
+        self._gpu_zero_streak = 0
         self._cpu_ctrl_temp: Optional[float] = None
         self._gpu_ctrl_temp: Optional[float] = None
         self._cpu_guard_floor = 0
@@ -160,7 +163,7 @@ class AppServices(QObject):
             except (AttributeError, RuntimeError): pass
 
         self._current_profile = profile
-        self._auto_target = None
+        self._reset_auto_state()
         self._reset_stall_state()
         if not profile:
             self.controller_timer.stop()
@@ -191,7 +194,7 @@ class AppServices(QObject):
                 self._current_profile.get_cpu_fan_table(),
                 self._current_profile.get_gpu_fan_table()
             )
-            self._auto_target = None
+            self._reset_auto_state()
 
     def _update_controller_settings(self):
         if self._current_profile:
@@ -268,12 +271,14 @@ class AppServices(QObject):
                 else:
                     self.state.set_applied_fan_mode(FAN_MODE_UNKNOWN)
                     self.state.set_applied_fan_speed_percent(INIT_APPLIED_PERCENTAGE)
+                    self.state.set_applied_gpu_fan_percent(INIT_APPLIED_PERCENTAGE)
                 if on_done:
                     on_done(False)
                 return
             self.state.set_applied_fan_mode(FAN_MODE_BIOS)
             self.state.set_is_fan_control_panel_enabled(False)
             self.state.set_applied_fan_speed_percent(INIT_APPLIED_PERCENTAGE)
+            self.state.set_applied_gpu_fan_percent(INIT_APPLIED_PERCENTAGE)
             self._write_last_mode_state(FAN_MODE_BIOS)
             if on_done:
                 on_done(True)
@@ -291,6 +296,13 @@ class AppServices(QObject):
             if mod is not None and getattr(mod, "_emergency_latched", False):
                 return True
         return False
+
+    def _reset_auto_state(self):
+        """Reset both channels' auto targets and zero-release streaks."""
+        self._auto_target = None
+        self._gpu_auto_target = None
+        self._zero_streak = 0
+        self._gpu_zero_streak = 0
 
     def _reset_stall_state(self):
         self._fan1_stall_cycles = 0
@@ -320,7 +332,7 @@ class AppServices(QObject):
         if self.wmi_interface.start(init_timeout=3.0):
             self._log_control_event("wmi recovery ok")
             self.state.set_controller_status_message("")
-            self._auto_target = None
+            self._reset_auto_state()
             profile = self._current_profile
             if profile and self.state.get_applied_fan_mode() in (FAN_MODE_AUTO, FAN_MODE_CUSTOM):
                 # recover_after_resume() stops the timer and returns early when
@@ -353,7 +365,7 @@ class AppServices(QObject):
         profile = self._current_profile
         if not profile:
             return
-        self._auto_target = None
+        self._reset_auto_state()
         mode = profile.get_fan_mode()
         self.set_fan_mode(mode)
         if mode == FAN_MODE_AUTO:
@@ -440,10 +452,11 @@ class AppServices(QObject):
         generation = self._mode_generation
         try:
             if mode == FAN_MODE_AUTO:
-                self._auto_target = None
+                self._reset_auto_state()
                 self._reset_stall_state()
                 self.auto_temp_controller.reset_state()
                 self.state.set_applied_fan_speed_percent(INIT_APPLIED_PERCENTAGE)
+                self.state.set_applied_gpu_fan_percent(INIT_APPLIED_PERCENTAGE)
                 if not self.controller_timer.isActive():
                     self.controller_timer.start()
                 self.state.set_applied_fan_mode(FAN_MODE_AUTO)
@@ -452,7 +465,7 @@ class AppServices(QObject):
                 self._write_heartbeat(force=True)
                 self._perform_control_cycle()
             elif mode == FAN_MODE_CUSTOM:
-                self._auto_target = None
+                self._reset_auto_state()
                 self._reset_stall_state()
                 if not self.controller_timer.isActive():
                     self.controller_timer.start()
@@ -464,7 +477,7 @@ class AppServices(QObject):
             elif mode == FAN_MODE_BIOS:
                 if self.controller_timer.isActive():
                     self.controller_timer.stop()
-                self._auto_target = None
+                self._reset_auto_state()
                 self._reset_stall_state()
                 self._request_bios_control(generation=generation, fallback_mode=previous_mode)
             else:
@@ -477,6 +490,7 @@ class AppServices(QObject):
                 tr("fan_mode_apply_failed", mode=_mode_label(mode)))
             self.state.set_applied_fan_mode(FAN_MODE_UNKNOWN)
             self.state.set_applied_fan_speed_percent(INIT_APPLIED_PERCENTAGE)
+            self.state.set_applied_gpu_fan_percent(INIT_APPLIED_PERCENTAGE)
 
     @Slot(int)
     def set_custom_fan_speed(self, speed: int):
@@ -706,7 +720,7 @@ class AppServices(QObject):
                 self.state.set_gpu_ctrl_temp(gpu_ctrl)
 
             if mode == FAN_MODE_CUSTOM:
-                base_target = 0
+                cpu_base = gpu_base = 0
                 custom_speed = int(self._current_profile.get_custom_fan_speed())
             else:
                 # NVML feed-forward: lift the GPU curve input by a power-based
@@ -720,7 +734,8 @@ class AppServices(QObject):
                     gpu_ff_temp = gpu_ctrl + feedforward_offset(
                         gpu_power_w, NVML_FF_IDLE_W, NVML_FF_K_C_PER_W,
                         self.wmi_interface.ff_max_boost_cap())
-                base_target = self.auto_temp_controller.theoretical_target(cpu_ctrl, gpu_ff_temp)
+                cpu_base = self.auto_temp_controller.cpu_curve_target(cpu_ctrl)
+                gpu_base = self.auto_temp_controller.gpu_curve_target(gpu_ff_temp)
                 custom_speed = 0
 
             # Guard floors key on RAW temps: the EMA lags load onset by a few
@@ -730,34 +745,63 @@ class AppServices(QObject):
             # sensor noise, so the EMA buys nothing here.
             self._cpu_guard_floor = guard_floor(cpu_temp, self._cpu_guard_floor)
             self._gpu_guard_floor = guard_floor(gpu_temp, self._gpu_guard_floor)
-            raw_target = select_fan_target(
-                mode, custom_speed, base_target, cpu_temp, gpu_temp, gpu_asleep,
-                self._cpu_guard_floor, self._gpu_guard_floor,
-            )
-            if mode == FAN_MODE_AUTO:
-                target, self._zero_streak = next_target(
-                    self._auto_target, raw_target,
+            # Split fan control: each EC channel follows its own die's curve.
+            # Auto-mode only (the UI toggle is disabled outside auto); custom
+            # mode keeps one slider driving both channels.
+            split = (mode == FAN_MODE_AUTO) and bool(
+                self._current_profile.get_value("split_fan_control", True))
+            if split:
+                cpu_target, gpu_target = select_per_fan_targets(
+                    mode, custom_speed, cpu_base, gpu_base,
+                    cpu_temp, gpu_temp, gpu_asleep,
+                    self._cpu_guard_floor, self._gpu_guard_floor)
+                cpu_target, self._zero_streak = next_target(
+                    self._auto_target, cpu_target,
                     DEFAULT_TARGET_HYSTERESIS_PERCENT, self._zero_streak)
-                self._auto_target = target
+                gpu_target, self._gpu_zero_streak = next_target(
+                    self._gpu_auto_target, gpu_target,
+                    DEFAULT_TARGET_HYSTERESIS_PERCENT, self._gpu_zero_streak)
+                self._auto_target = cpu_target
+                self._gpu_auto_target = gpu_target
+                target = cpu_target  # UI target display stays CPU-channel
             else:
-                target = raw_target
+                raw_target = select_fan_target(
+                    mode, custom_speed, max(cpu_base, gpu_base),
+                    cpu_temp, gpu_temp, gpu_asleep,
+                    self._cpu_guard_floor, self._gpu_guard_floor,
+                )
+                if mode == FAN_MODE_AUTO:
+                    target, self._zero_streak = next_target(
+                        self._auto_target, raw_target,
+                        DEFAULT_TARGET_HYSTERESIS_PERCENT, self._zero_streak)
+                    self._auto_target = target
+                else:
+                    target = raw_target
+                gpu_target = target
 
             percent = next_fan_percent(
                 self.state.get_applied_fan_speed_percent(),
                 target,
             )
-            self._update_fan_stall(percent, fan1_rpm, fan2_rpm, gpu_asleep)
+            gpu_percent = next_fan_percent(
+                self.state.get_applied_gpu_fan_percent(),
+                gpu_target,
+            )
+            self._update_fan_stall(percent, gpu_percent, fan1_rpm, fan2_rpm, gpu_asleep)
             self._update_hot_alert(cpu_temp, gpu_temp, gpu_asleep)
 
-            changed = percent != self.state.get_applied_fan_speed_percent()
+            changed = (percent != self.state.get_applied_fan_speed_percent()
+                       or gpu_percent != self.state.get_applied_gpu_fan_percent())
             self._cycles_since_flag_reassert += 1
             if changed or self._cycles_since_flag_reassert >= FLAG_REASSERT_EVERY_CYCLES:
                 # H4：仅在占空比变化或 keepalive 到期时写 EC（reassert 同时重写占空比，双保险）。
-                self._pending_cycle = {"target": target, "percent": percent}
-                duty_raw = float(percent_to_raw(percent))
+                self._pending_cycle = {"target": target, "percent": percent,
+                                       "gpu_target": gpu_target, "gpu_percent": gpu_percent}
                 self.wmi_interface.submit_async(
                     WMIInternalSignal.APPLY_FAN_CONTROL,
-                    {"duty_raw": duty_raw, "reassert_flags": True},
+                    {"cpu_duty_raw": float(percent_to_raw(percent)),
+                     "gpu_duty_raw": float(percent_to_raw(gpu_percent)),
+                     "reassert_flags": True},
                     on_done=lambda result, exc: self._on_cycle_applied(result, exc, cycle_id),
                 )
                 return  # in_flight 保持 True，watchdog 继续看护
@@ -793,21 +837,24 @@ class AppServices(QObject):
         if not readable or all(t < HOT_ALERT_RESET_C for t in readable):
             self._hot_alert_active = False
 
-    def _update_fan_stall(self, percent: int, fan1_rpm: Any, fan2_rpm: Any, gpu_asleep: bool):
-        duty_raw = percent_to_raw(percent)
-        if duty_raw <= 0:
-            self._reset_stall_state()
-            return
+    def _update_fan_stall(self, cpu_percent: int, gpu_percent: int,
+                          fan1_rpm: Any, fan2_rpm: Any, gpu_asleep: bool):
+        """Stall detection per channel: a channel with a zero commanded duty
+        resets its own counter (a sleeping dGPU's stopped fan is not a stall)."""
+        cpu_duty_raw = percent_to_raw(cpu_percent)
+        gpu_duty_raw = percent_to_raw(gpu_percent)
 
         stalled_fans = []
-        if fan1_rpm == 0:
+        if cpu_duty_raw <= 0:
+            self._fan1_stall_cycles = 0
+        elif fan1_rpm == 0:
             self._fan1_stall_cycles += 1
             if self._fan1_stall_cycles >= FAN_STALL_CYCLES:
                 stalled_fans.append(tr("fan_label_cpu"))
         else:
             self._fan1_stall_cycles = 0
 
-        if gpu_asleep:
+        if gpu_asleep or gpu_duty_raw <= 0:
             self._fan2_stall_cycles = 0
         elif fan2_rpm == 0:
             self._fan2_stall_cycles += 1
@@ -850,12 +897,13 @@ class AppServices(QObject):
             return
         self.state.set_auto_fan_target_speed_percent(pending["target"])
         self.state.set_applied_fan_speed_percent(pending["percent"])
+        self.state.set_applied_gpu_fan_percent(pending["gpu_percent"])
 
     def _on_cycle_failed(self, error: Exception):
         print(f"WMI operation failed in control cycle: {error}", file=sys.stderr)
         self._log_control_event(f"cycle failed: {error!r}")
         self.state.set_controller_status_message(tr("wmi_error"))
-        self._auto_target = None
+        self._reset_auto_state()
         self._reset_stall_state()
         if self._is_ui_visible:
             self.state.set_cpu_temp(TEMP_READ_ERROR_VALUE)
@@ -869,7 +917,7 @@ class AppServices(QObject):
         self._cycle_in_flight = False
         self._cycle_generation += 1
         self._pending_cycle = None
-        self._auto_target = None
+        self._reset_auto_state()
         self._log_control_event("cycle watchdog fired: rebuilding worker")
         try:
             self.wmi_interface.stop(join_timeout=1.0)

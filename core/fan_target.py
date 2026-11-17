@@ -89,3 +89,49 @@ def select_fan_target(
         target = max(target, floor)
 
     return int(round(clip(target, MIN_FAN_PERCENT, MAX_FAN_PERCENT)))
+
+
+def select_per_fan_targets(
+    mode: str,
+    custom_speed: int,
+    cpu_base: int,
+    gpu_base: int,
+    cpu_temp: float,
+    gpu_temp: float,
+    gpu_asleep: bool = False,
+    cpu_floor: Optional[int] = None,
+    gpu_floor: Optional[int] = None,
+) -> Tuple[int, int]:
+    """Return ``(cpu_channel_target, gpu_channel_target)`` for this tick.
+
+    Each EC channel follows its own die: CPU fan from ``cpu_base`` (CPU curve),
+    GPU fan from ``gpu_base`` (GPU curve).  Channels are NOT coupled through a
+    shared max - that is the mirrored pattern this function replaces.
+    Fault/floor overlays apply per channel:
+
+    - CPU channel: unreadable CPU temp forces ``FAULT_TARGET_BOTH``.
+    - GPU channel: a sleeping dGPU needs no airflow (0); an unreadable GPU
+      temp (awake) floors the channel at ``FAULT_TARGET_ONE``; otherwise the
+      guard floor lifts the channel like ``select_fan_target`` does.
+    """
+    base = custom_speed if mode == FAN_MODE_CUSTOM else None
+
+    if cpu_temp == TEMP_READ_ERROR_VALUE:
+        cpu_target: int = FAULT_TARGET_BOTH
+    else:
+        cpu_target = base if base is not None else cpu_base
+        floor = cpu_floor if cpu_floor is not None else guard_floor(cpu_temp)
+        cpu_target = max(cpu_target, floor)
+
+    if gpu_asleep:
+        gpu_target = 0
+    elif gpu_temp == TEMP_READ_ERROR_VALUE:
+        gpu_target = max(base if base is not None else gpu_base, FAULT_TARGET_ONE)
+    else:
+        gpu_target = base if base is not None else gpu_base
+        floor = gpu_floor if gpu_floor is not None else guard_floor(gpu_temp)
+        gpu_target = max(gpu_target, floor)
+
+    cpu_target = int(round(clip(cpu_target, MIN_FAN_PERCENT, MAX_FAN_PERCENT)))
+    gpu_target = int(round(clip(gpu_target, MIN_FAN_PERCENT, MAX_FAN_PERCENT)))
+    return cpu_target, gpu_target

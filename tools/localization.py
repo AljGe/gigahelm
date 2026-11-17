@@ -64,6 +64,8 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     "start_on_boot_tooltip": "Automatically start with Windows via Task Scheduler.",
     "ff_checkbox_label": "GPU power feed-forward",
     "ff_checkbox_tooltip": "Auto mode only: lift the GPU fan curve by predicted GPU heat (NVML power) so fans react before the heatsink warms up.",
+    "split_fan_checkbox_label": "Independent CPU / GPU fan control",
+    "split_fan_checkbox_tooltip": "Each fan follows its own die's curve; the GPU fan stays off while the GPU is cool or asleep",
     "fan_mode_tooltip": "Select the fan control mode.\nBIOS: Control by hardware\nAuto: Control by temperature curve\nCustom: Fixed fan speed",
     "custom_fan_speed_tooltip": "Set a fixed fan speed for Custom mode.\nThe EC idles the fans below raw duty 57 (25%): requests of 1-24% all drive 25%, and the display shows the effective duty.",
     "charge_policy_tooltip": "Select the battery charging policy.\nBIOS: Default hardware behavior\nCustom: Limit charging to a specific threshold",
@@ -165,6 +167,7 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     # unit strings that were previously hardcoded
     "curve_min_points_reached": "A curve needs at least {n} points",
     "ff_disabled_not_auto": "Only available in Auto mode",
+    "split_disabled_not_auto": "Only applies in auto mode",
     "fan_mode_apply_failed": "Fan mode '{mode}' rejected; previous mode kept",
     "refresh_ms": "{ms} ms",
     "tray_charge_percent": "{n} %",
@@ -220,6 +223,8 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     "start_on_boot_tooltip": "通过任务计划程序随 Windows 自动启动。",
     "ff_checkbox_label": "GPU 功率前馈",
     "ff_checkbox_tooltip": "仅自动模式：根据 GPU 功率预测发热并提前抬高 GPU 风扇曲线，让风扇在散热器变热之前响应。",
+    "split_fan_checkbox_label": "CPU / GPU 独立风扇控制",
+    "split_fan_checkbox_tooltip": "每个风扇按各自芯片的曲线调速；GPU 低温或休眠时 GPU 风扇停转",
     "fan_mode_tooltip": "选择风扇控制模式。\nBIOS: 由硬件控制\n自动: 根据温度曲线控制\n自定义: 固定风扇速度",
     "custom_fan_speed_tooltip": "为自定义模式设置一个固定的风扇速度。\nEC 在原始占空比 57（25%）以下无法维持风扇：1-24% 的请求都会以 25% 运行，显示值为实际生效的占空比。",
     "charge_policy_tooltip": "选择电池充电策略。\nBIOS: 默认硬件行为\n自定义: 将充电限制在特定阈值",
@@ -320,6 +325,7 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     # UX pass additions
     "curve_min_points_reached": "曲线至少需要 {n} 个点",
     "ff_disabled_not_auto": "仅在自动模式下可用",
+    "split_disabled_not_auto": "仅在自动模式下生效",
     "fan_mode_apply_failed": "风扇模式 '{mode}' 被拒绝；已保持原模式",
     "refresh_ms": "{ms} ms",
     "tray_charge_percent": "{n} %",

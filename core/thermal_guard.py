@@ -91,13 +91,16 @@ class ThermalGuardWatchdog(threading.Thread):
         self._duty_raw_max = duty_raw_max
         self._last_mode_path = os.path.join(base_dir, LAST_MODE_FILENAME)
         self._stop_event = threading.Event()
-        # Dual-purpose state: the last floor this thread forced. It throttles
-        # same-or-lower re-forces to one write per 10 s (a higher floor forces
-        # immediately) and carries engage/release hysteresis: the floor holds
-        # until the CPU cools GUARD_RELEASE_C below its engage threshold, so
-        # integer sensor noise at 80/85/90 degC cannot pump the fans.
-        self._last_force_monotonic: float = 0.0
-        self._last_forced_floor: int = 0
+        # Dual-purpose per-channel state: the last floor this thread forced
+        # on that channel. It throttles same-or-lower re-forces to one write
+        # per 10 s (a higher floor forces immediately) and carries
+        # engage/release hysteresis: the floor holds until the die cools
+        # GUARD_RELEASE_C below its engage threshold, so integer sensor noise
+        # at 80/85/90 degC cannot pump the fans.
+        self._last_force_monotonic_cpu: float = 0.0
+        self._last_force_monotonic_gpu: float = 0.0
+        self._last_forced_floor_cpu: int = 0
+        self._last_forced_floor_gpu: int = 0
         self._owns_cache: Optional[tuple] = None
 
     def stop(self, join_s: float = 0.0) -> None:
@@ -160,43 +163,80 @@ class ThermalGuardWatchdog(threading.Thread):
         except Exception:
             return None
 
-    def _force_floor(self, setter, floor: int) -> None:
+    def _force_floor(self, setter, floor: int, gpu: bool = False) -> None:
         duty_raw = float(percent_to_raw(floor))
         writes = (
             (SET_CUSTOM_FAN_STATUS, 1.0),
             (SET_SUPER_QUIET, 0.0),
             (SET_AUTO_FAN_STATUS, 0.0),
             (SET_STEP_FAN_STATUS, 0.0),
-            (SET_CUSTOM_FAN_SPEED, duty_raw),
-            (SET_GPU_FAN_DUTY, duty_raw),
+            (SET_GPU_FAN_DUTY if gpu else SET_CUSTOM_FAN_SPEED, duty_raw),
         )
         for name, data in writes:
             self._call(setter, name, Data=data)
 
-    def _check_once(self, getter, setter) -> Optional[int]:
-        """One poll; returns the forced floor percent when a write happened."""
-        if not self._owns_fans():
-            return None
-        cpu_temp = self._call(getter, "getCpuTemp")
-        floor = force_duty_percent(cpu_temp, None, self._duty_raw_max,
-                                   engaged_floor=self._last_forced_floor)
+    def _poll_channel(self, getter, setter, temp: Optional[float],
+                      readback_name: str, *, gpu: bool) -> Optional[int]:
+        """One channel's guard poll; returns the forced floor when written.
+
+        ``readback_name`` is only read after the temperature alone demands a
+        floor, mirroring the original CPU channel's lazy EC access.
+        """
+        engaged = self._last_forced_floor_gpu if gpu else self._last_forced_floor_cpu
+        floor = force_duty_percent(temp, None, self._duty_raw_max,
+                                   engaged_floor=engaged)
         if floor is None:
             # Cool past the release band: engagement ends, next engagement
             # at the threshold forces immediately again.
-            self._last_forced_floor = 0
+            if gpu:
+                self._last_forced_floor_gpu = 0
+            else:
+                self._last_forced_floor_cpu = 0
             return None
-        fixed_raw = self._call(getter, "GetFixedFanSpeed")
-        floor = force_duty_percent(cpu_temp, fixed_raw, self._duty_raw_max,
-                                   engaged_floor=self._last_forced_floor)
+        readback = self._call(getter, readback_name)
+        floor = force_duty_percent(temp, readback, self._duty_raw_max,
+                                   engaged_floor=engaged)
         if floor is None:
             return None  # hot but the EC already sits at/above the floor
+        last_mono = self._last_force_monotonic_gpu if gpu else self._last_force_monotonic_cpu
         now = time.monotonic()
-        if floor <= self._last_forced_floor and now - self._last_force_monotonic < 10.0:
+        if floor <= engaged and now - last_mono < 10.0:
             return None  # same-or-lower floor re-forced recently: back off
-        self._last_force_monotonic = now
-        self._last_forced_floor = floor
-        self._force_floor(setter, floor)
+        if gpu:
+            self._last_force_monotonic_gpu = now
+            self._last_forced_floor_gpu = floor
+        else:
+            self._last_force_monotonic_cpu = now
+            self._last_forced_floor_cpu = floor
+        self._force_floor(setter, floor, gpu=gpu)
         return floor
+
+    def _check_once(self, getter, setter) -> Tuple[Optional[int], Optional[int]]:
+        """One poll; returns ``(cpu_forced, gpu_forced)`` — the forced floor
+        percent when that channel wrote, else None.
+
+        The GPU channel stands down when both GPU sensors are unreadable
+        (fault handling belongs to the control loop, which writes
+        FAULT_TARGET_ONE to the GPU channel) and when they report 0 degC:
+        the EC reports 0 for both GPU sensors exactly when the dGPU is
+        powered down (same rule as wmi_interface._get_temperatures) — no die
+        to cool, no airflow needed.
+        """
+        if not self._owns_fans():
+            return None, None
+        cpu_temp = self._call(getter, "getCpuTemp")
+        cpu_forced = self._poll_channel(getter, setter, cpu_temp,
+                                        "GetFixedFanSpeed", gpu=False)
+        t1 = self._call(getter, "getGpuTemp1")
+        t2 = self._call(getter, "getGpuTemp2")
+        gpu_forced: Optional[int] = None
+        readings = [t for t in (t1, t2) if t is not None]
+        if readings:
+            gpu_temp = max(readings)
+            if gpu_temp > 0.0:
+                gpu_forced = self._poll_channel(getter, setter, gpu_temp,
+                                                "GetGPUFanDuty", gpu=True)
+        return cpu_forced, gpu_forced
 
     # ------------------------------------------------------------------ run
     def run(self):
@@ -213,9 +253,11 @@ class ThermalGuardWatchdog(threading.Thread):
         while not self._stop_event.is_set():
             started = time.time()
             try:
-                forced = self._check_once(getter, setter)
-                if forced is not None:
-                    self._log(f"forced guard floor {forced} % (cpu hot, EC below floor)")
+                cpu_forced, gpu_forced = self._check_once(getter, setter)
+                if cpu_forced is not None:
+                    self._log(f"forced guard floor {cpu_forced} % (cpu, EC below floor)")
+                if gpu_forced is not None:
+                    self._log(f"forced guard floor {gpu_forced} % (gpu, EC below floor)")
             except Exception as error:
                 self._log(f"poll failed: {error!r}")
             elapsed = time.time() - started

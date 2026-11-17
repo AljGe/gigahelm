@@ -19,6 +19,7 @@ from gui.qt import QApplication  # noqa: E402
 _APP = QApplication.instance() or QApplication([])
 
 from core.gpu_power import feedforward_offset  # noqa: E402
+from core.fan_duty import percent_to_raw  # noqa: E402
 from core.path_manager import PathManager  # noqa: E402
 from core.state import AppState  # noqa: E402
 from core.app_services import AppServices  # noqa: E402
@@ -127,9 +128,16 @@ class FeedforwardCycleTests(unittest.TestCase):
         svc_ff._recover_wmi_if_due()
         ff_target = state_ff.get_auto_fan_target_speed_percent()
 
-        # baseline: curve(45) = 10 %; with feed-forward: curve(55) = 30 %
+        # Split control (the shipped default) drives each channel from its
+        # own curve, so feed-forward is visible on the GPU channel's duty:
+        # baseline curve(45) = 10 %; with feed-forward curve(55) = 30 %.
+        # The UI target stays CPU-channel (10 % both runs).
         self.assertEqual(base_target, 10)
-        self.assertEqual(ff_target, 30)
+        self.assertEqual(ff_target, 10)
+        self.assertEqual(svc_base.wmi_interface.applies[-1]["gpu_duty_raw"],
+                         float(percent_to_raw(10)))
+        self.assertEqual(svc_ff.wmi_interface.applies[-1]["gpu_duty_raw"],
+                         float(percent_to_raw(30)))
 
     def test_toggle_off_disables_channel(self):
         cfg = {"fan_mode": "auto", "cpu_fan_table": CURVE, "gpu_fan_table": CURVE,
