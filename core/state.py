@@ -16,6 +16,12 @@ from config.settings import (
 )
 from core.interpolation import clip
 from core.path_manager import PathManager
+    applied_gpu_fan_percent_changed = Signal(int)
+        self._applied_gpu_fan_percent: int = 0
+    def get_applied_gpu_fan_percent(self) -> int: return self._applied_gpu_fan_percent
+    def set_applied_gpu_fan_percent(self, value: int): self._set_value('_applied_gpu_fan_percent', value, self.applied_gpu_fan_percent_changed)
+    applied_gpu_fan_percent = Property(int, get_applied_gpu_fan_percent, set_applied_gpu_fan_percent, notify=applied_gpu_fan_percent_changed) # type: ignore
+
 
 
 def _as_number(value: Any) -> Optional[float]:

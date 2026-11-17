@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from core.fan_target import guard_floor, select_fan_target
+from core.fan_target import guard_floor, select_fan_target, select_per_fan_targets
 from config.settings import (
     FAN_MODE_AUTO, FAN_MODE_CUSTOM, TEMP_READ_ERROR_VALUE,
 )
@@ -80,6 +80,80 @@ class GuardFloorTests(unittest.TestCase):
 
     def test_reengagement_while_engaged_takes_the_higher_floor(self):
         self.assertEqual(guard_floor(91.0, engaged_floor=40), 80)
+
+
+class SelectPerFanTargetsTests(unittest.TestCase):
+    """Split control: each channel follows its own die; no shared max."""
+
+    def test_sleeping_gpu_channel_is_zero(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 30, 50, 65.0, TEMP_READ_ERROR_VALUE,
+            gpu_asleep=True)
+        self.assertEqual(cpu, 30)
+        self.assertEqual(gpu, 0)
+
+    def test_hot_cpu_does_not_lift_gpu_channel(self):
+        # CPU at 91 °C demands the 80 % guard floor; a cool GPU stays low.
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 5, 5, 91.0, 45.0)
+        self.assertEqual(cpu, 80)
+        self.assertEqual(gpu, 5)
+
+    def test_hot_gpu_does_not_lift_cpu_channel(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 5, 5, 45.0, 91.0)
+        self.assertEqual(cpu, 5)
+        self.assertEqual(gpu, 80)
+
+    def test_explicit_floors_apply_per_channel(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 10, 10, 60.0, 60.0,
+            cpu_floor=45, gpu_floor=None)
+        self.assertEqual(cpu, 45)
+        self.assertEqual(gpu, 10)
+
+    def test_cpu_sensor_error_forces_eighty_on_cpu_only(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 5, 5, TEMP_READ_ERROR_VALUE, 45.0)
+        self.assertEqual(cpu, 80)
+        self.assertEqual(gpu, 5)
+
+    def test_gpu_sensor_error_floors_gpu_at_forty(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 5, 5, 60.0, TEMP_READ_ERROR_VALUE)
+        self.assertGreaterEqual(gpu, 40)
+        self.assertEqual(cpu, 5)
+
+    def test_gpu_sensor_error_with_hot_cpu_curve_still_floors_gpu(self):
+        # GPU base above 40 stays; the floor lifts a low base.
+        _, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 5, 55, 60.0, TEMP_READ_ERROR_VALUE)
+        self.assertEqual(gpu, 55)
+        _, gpu = select_per_fan_targets(
+            FAN_MODE_AUTO, 0, 5, 5, 60.0, TEMP_READ_ERROR_VALUE)
+        self.assertEqual(gpu, 40)
+
+    def test_custom_mode_drives_both_channels(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_CUSTOM, 30, 0, 0, 60.0, 45.0)
+        self.assertEqual(cpu, 30)
+        self.assertEqual(gpu, 30)
+
+    def test_custom_mode_still_gets_guards(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_CUSTOM, 10, 0, 0, 85.0, 90.0)
+        self.assertEqual(cpu, 60)
+        self.assertEqual(gpu, 80)
+
+    def test_output_is_clipped_per_channel(self):
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_CUSTOM, 150, 0, 0, 60.0, 60.0)
+        self.assertEqual(cpu, 100)
+        self.assertEqual(gpu, 100)
+        cpu, gpu = select_per_fan_targets(
+            FAN_MODE_CUSTOM, -10, 0, 0, 60.0, 60.0)
+        self.assertEqual(cpu, 0)
+        self.assertEqual(gpu, 0)
 
 
 class FloorAwareSelectionTests(unittest.TestCase):
