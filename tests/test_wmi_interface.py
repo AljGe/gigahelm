@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import threading
 import unittest
+from queue import Queue
 from unittest.mock import patch
 
 import core.wmi_interface as wmi_module
+from config.settings import NVML_FF_MAX_BOOST_C, NVML_FF_RESUME_SOFT_CAP_C
 
 
 class FakeWorker:
@@ -146,6 +148,30 @@ class BoundedCallTests(unittest.TestCase):
             result, exception = self._request()
         self.assertIsNone(exception)
         self.assertEqual(result["cpu_temp"], 55.0)
+
+
+class FacadeFeedforwardCapTests(unittest.TestCase):
+    """Regression (2026-11-16 18:33 deploy): ff_max_boost_cap shipped only on
+    the worker while the control cycle calls it on the facade - every
+    auto-mode cycle died on AttributeError before writing the EC, and the
+    external watchdog reverted to BIOS 45 s after deploy. The test doubles
+    stubbed the method, so only a real-facade test catches this shape."""
+
+    def setUp(self):
+        self.interface = wmi_module.WMIInterface()
+        self.addCleanup(setattr, self.interface, "_worker_thread", None)
+
+    def test_no_worker_returns_normal_cap(self):
+        self.assertIsNone(self.interface._worker_thread)
+        self.assertEqual(self.interface.ff_max_boost_cap(), NVML_FF_MAX_BOOST_C)
+
+    def test_live_worker_cap_tracks_soft_start_ramp(self):
+        worker = wmi_module.WMIWorker(Queue(), "GB_WMIACPI_Get", "GB_WMIACPI_Set")
+        self.interface._worker_thread = worker
+        worker._ff_ramp_cycles_left = 1
+        self.assertEqual(self.interface.ff_max_boost_cap(), NVML_FF_RESUME_SOFT_CAP_C)
+        worker._ff_ramp_cycles_left = 0
+        self.assertEqual(self.interface.ff_max_boost_cap(), NVML_FF_MAX_BOOST_C)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 Kept free of Qt and hardware so every rule is unit-testable.
 """
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .interpolation import clip
 from config.settings import (
@@ -19,8 +19,36 @@ THERMAL_GUARDS: List[Tuple[float, int]] = [
     (90.0, 80),
 ]
 
+#: Engaged guard floors release only this many degC below their engage
+#: threshold.  EC temperatures are integers and the floors step by 20-40
+#: points while upward moves apply immediately, so engage/release at the same
+#: temperature lets ±1 degC sensor noise at 80/85/90 °C pump the fans.
+GUARD_RELEASE_C = 3.0
+
 FAULT_TARGET_BOTH = 80
 FAULT_TARGET_ONE = 40
+
+
+def guard_floor(temp: float, engaged_floor: int = 0,
+                thresholds: List[Tuple[float, int]] = THERMAL_GUARDS,
+                release_c: float = GUARD_RELEASE_C) -> int:
+    """This tick's guard floor with engage/release hysteresis.
+
+    Engages at a threshold; an already-engaged floor holds until the
+    temperature drops ``release_c`` below that floor's engage threshold.
+    ``engaged_floor`` is the floor returned for the previous tick (0 = none).
+    Unreadable temperatures release immediately - fault handling owns them.
+    """
+    floor = 0
+    for threshold, minimum in thresholds:
+        if temp >= threshold:
+            floor = max(floor, minimum)
+    if engaged_floor:
+        for threshold, minimum in thresholds:
+            if minimum == engaged_floor and temp >= threshold - release_c:
+                floor = max(floor, engaged_floor)
+                break
+    return floor
 
 
 def select_fan_target(
@@ -30,8 +58,16 @@ def select_fan_target(
     cpu_temp: float,
     gpu_temp: float,
     gpu_asleep: bool = False,
+    cpu_floor: Optional[int] = None,
+    gpu_floor: Optional[int] = None,
 ) -> int:
-    """Return the duty the EC should receive for this control tick."""
+    """Return the duty the EC should receive for this control tick.
+
+    ``cpu_floor``/``gpu_floor`` are this tick's guard floors from
+    ``guard_floor`` (pass them when the caller tracks engagement).  ``None``
+    computes the stateless engage-only floor from the temperature, matching
+    the pre-hysteresis behavior.
+    """
     base = custom_speed if mode == FAN_MODE_CUSTOM else base_target
     cpu_bad = cpu_temp == TEMP_READ_ERROR_VALUE
     # A sleeping dGPU reports 0 for both sensors; that is a sleep state, not a
@@ -46,12 +82,10 @@ def select_fan_target(
         target = base
 
     if not cpu_bad:
-        for threshold, minimum in THERMAL_GUARDS:
-            if cpu_temp >= threshold:
-                target = max(target, minimum)
+        floor = cpu_floor if cpu_floor is not None else guard_floor(cpu_temp)
+        target = max(target, floor)
     if not gpu_bad:
-        for threshold, minimum in THERMAL_GUARDS:
-            if gpu_temp >= threshold:
-                target = max(target, minimum)
+        floor = gpu_floor if gpu_floor is not None else guard_floor(gpu_temp)
+        target = max(target, floor)
 
     return int(round(clip(target, MIN_FAN_PERCENT, MAX_FAN_PERCENT)))

@@ -29,7 +29,7 @@ from config.settings import (
     SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_SPEED, SET_CUSTOM_FAN_STATUS,
     SET_GPU_FAN_DUTY, SET_STEP_FAN_STATUS, SET_SUPER_QUIET,
 )
-from core.fan_target import THERMAL_GUARDS
+from core.fan_target import GUARD_RELEASE_C, THERMAL_GUARDS
 from tools.system_utils import set_thread_priority_above_normal
 
 #: EC duty word ceiling (percent_to_raw(100)).
@@ -41,20 +41,29 @@ OWNING_MODES = ("auto", "custom")
 
 def force_duty_percent(cpu_temp: Optional[float], fixed_raw: Optional[float],
                        duty_raw_max: float = DUTY_RAW_MAX,
-                       thresholds: List[Tuple[float, int]] = THERMAL_GUARDS
+                       thresholds: List[Tuple[float, int]] = THERMAL_GUARDS,
+                       engaged_floor: int = 0,
+                       release_c: float = GUARD_RELEASE_C
                        ) -> Optional[int]:
     """Guard floor duty (percent) to force, or None when all is well.
 
-    None when the temperature is unreadable or below every threshold, or the
-    EC already sits at/above the floor. An unreadable duty readback forces
-    the floor - unknown is treated as too low while hot.
+    None when the temperature is unreadable or below every threshold (or
+    release hysteresis holds nothing), or the EC already sits at/above the
+    floor. An unreadable duty readback forces the floor - unknown is treated
+    as too low while hot. ``engaged_floor`` mirrors the engage/release rule of
+    core/fan_target.guard_floor so the watchdog never fights the loop.
     """
-    if cpu_temp is None or cpu_temp < thresholds[0][0]:
+    if cpu_temp is None:
         return None
     floor = 0
     for threshold, minimum in thresholds:
         if cpu_temp >= threshold:
             floor = max(floor, minimum)
+    if engaged_floor:
+        for threshold, minimum in thresholds:
+            if minimum == engaged_floor and cpu_temp >= threshold - release_c:
+                floor = max(floor, engaged_floor)
+                break
     if floor == 0:
         return None
     if fixed_raw is None or fixed_raw < 0:
@@ -81,10 +90,11 @@ class ThermalGuardWatchdog(threading.Thread):
         self._duty_raw_max = duty_raw_max
         self._last_mode_path = os.path.join(base_dir, LAST_MODE_FILENAME)
         self._stop_event = threading.Event()
-        # Re-force backoff: when something keeps pushing the EC below the
-        # floor (e.g. a custom slider under the guard), re-forcing the same
-        # or a lower floor is throttled to one write per 10 s; a higher
-        # (hotter) floor forces immediately.
+        # Dual-purpose state: the last floor this thread forced. It throttles
+        # same-or-lower re-forces to one write per 10 s (a higher floor forces
+        # immediately) and carries engage/release hysteresis: the floor holds
+        # until the CPU cools GUARD_RELEASE_C below its engage threshold, so
+        # integer sensor noise at 80/85/90 degC cannot pump the fans.
         self._last_force_monotonic: float = 0.0
         self._last_forced_floor: int = 0
         self._owns_cache: Optional[tuple] = None
@@ -167,11 +177,16 @@ class ThermalGuardWatchdog(threading.Thread):
         if not self._owns_fans():
             return None
         cpu_temp = self._call(getter, "getCpuTemp")
-        floor = force_duty_percent(cpu_temp, None, self._duty_raw_max)
+        floor = force_duty_percent(cpu_temp, None, self._duty_raw_max,
+                                   engaged_floor=self._last_forced_floor)
         if floor is None:
-            return None  # cool or unreadable: nothing to decide yet
+            # Cool past the release band: engagement ends, next engagement
+            # at the threshold forces immediately again.
+            self._last_forced_floor = 0
+            return None
         fixed_raw = self._call(getter, "GetFixedFanSpeed")
-        floor = force_duty_percent(cpu_temp, fixed_raw, self._duty_raw_max)
+        floor = force_duty_percent(cpu_temp, fixed_raw, self._duty_raw_max,
+                                   engaged_floor=self._last_forced_floor)
         if floor is None:
             return None  # hot but the EC already sits at/above the floor
         now = time.monotonic()

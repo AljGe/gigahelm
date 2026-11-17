@@ -46,6 +46,11 @@ effort. Ordered by expected value.
   `percent_to_raw`, so curve points at 1–24 % are dead range (the default
   `[60, 15]` point effectively sits on the floor plateau). The editor now
   *shows* the floor line; the points themselves still waste curve range.
+  2026-11-16: the shipped/default curves were retuned to be floor-honest
+  (every point 0 or ≥ 25 % — `[60,15]`→`[60,25]`, `[68,15]`→`[68,25]`,
+  `[60,20]`→`[60,25]`, `[55,15]`→`[55,0]`), and the UI now displays the
+  effective duty (`core.fan_duty.effective_percent`). The opt-in remap below
+  remains the way to give user curves back that range.
 - **How:** opt-in interpretation where curve percent maps onto the usable
   band: `[0..100] -> [floor..100]` (15 % of usable ≈ 36 % absolute).
   Behavior change → needs a per-profile setting and a migration note.
