@@ -368,6 +368,12 @@ class LightweightCurveCanvas(QWidget):
             if speed == -1:
                 continue
             text = f"{label} {int(temp)}{tr('celsius_unit')} {speed}{tr('percent_unit')}"
+            ema_temp = self._cpu_ema_temp if curve_type == 'cpu' else self._gpu_ema_temp
+            if ema_temp is not None and ema_temp != TEMP_READ_ERROR_VALUE and ema_temp >= min_temp:
+                # Spell the EMA out numerically: the ring sits at the
+                # crosshair junction once the filter converges, and is easy
+                # to miss there.
+                text += f" · EMA {int(round(ema_temp))}{tr('celsius_unit')}"
             entries.append((text, color))
         return entries
 
@@ -383,12 +389,13 @@ class LightweightCurveCanvas(QWidget):
         return rects
 
     def _badge_area_rect(self) -> QRect:
-        """Fixed reserve covering both stacked indicator chips."""
+        """Fixed reserve covering both stacked indicator chips (widest
+        realistic chip: 'CPU 100°C 100% · EMA 99°C')."""
         height = int(2 * (QFontMetrics(self._chip_font()).height() + 6) + 16)
         return QRect(
-            int(self._plot_area.right()) - 140,
+            int(self._plot_area.right()) - 190,
             int(self._plot_area.top()),
-            140,
+            190,
             height,
         )
 
@@ -553,9 +560,16 @@ class LightweightCurveCanvas(QWidget):
             guide.setAlphaF(0.22)
             painter.setPen(QPen(guide, 1))
             painter.drawLine(QPointF(p.x(), self._plot_area.bottom()), p)
-            painter.setPen(QPen(QColor(palette.text), 2))
+            # Surface disc first: blanks the dotted crosshair junction under
+            # the ring so the hollow marker reads as one clean shape.
+            disc = QColor(palette.surface)
+            disc.setAlphaF(0.9)
+            painter.setPen(QPen(disc, 4))
+            painter.setBrush(disc)
+            painter.drawEllipse(p, 5.5, 5.5)
+            painter.setPen(QPen(QColor(palette.text), 2.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(p, 4.5, 4.5)
+            painter.drawEllipse(p, 5.5, 5.5)
             painter.restore()
 
     def _get_target_speed_for_indicator(self, temperature: float, curve_type: CurveType) -> int:
