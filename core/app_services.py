@@ -889,10 +889,17 @@ class AppServices(QObject):
         if not self._is_ui_visible:
             return
 
-        # In auto/custom the control cycle sweeps at its own cadence and
-        # already feeds this cache; polling here as well would double the EC
-        # traffic. In BIOS/UNKNOWN this tick is the only poller.
+        # The control cycle decides at controller_update_interval_ms (1.5 s
+        # default) and does NOT feed the display cache — without a poll here
+        # the footer's UI refresh only re-pushed stale data in auto/custom.
+        # In BIOS/UNKNOWN this tick is the only poller. In auto/custom,
+        # request a read-only sweep only when the cache is older than the UI
+        # cadence: the visible refresh honours the footer setting, EC control
+        # decisions keep their own slower cadence, and NVML stays behind its
+        # usual gates (asleep latch + idle skip) inside _get_core_sensors.
         if self.state.get_applied_fan_mode() not in (FAN_MODE_AUTO, FAN_MODE_CUSTOM):
+            self.wmi_interface.request_core_sensor_poll()
+        elif self.wmi_interface.get_core_sensor_age_ms() >= self.state.get_gui_update_interval_ms():
             self.wmi_interface.request_core_sensor_poll()
         sensor_data = self.wmi_interface.get_latest_core_sensor_data()
         self._update_state_from_sensor_data(sensor_data)
