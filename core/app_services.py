@@ -15,8 +15,11 @@ from .wmi_interface import WMIInterface, WMIError
 from .auto_temp_controller import AutoTemperatureController
 from .state import AppState, ProfileState
 from .fan_duty import percent_to_raw, effective_percent
-from .fan_ramp import next_fan_percent, next_target
-from .fan_target import guard_floor, select_fan_target, select_per_fan_targets
+from .fan_ramp import UP_STEP_PERCENT, next_fan_percent, next_target
+from .fan_target import (
+    FAULT_TARGET_BOTH, FAULT_TARGET_ONE, guard_floor, select_fan_target,
+    select_per_fan_targets,
+)
 from .thermal_guard import ThermalGuardWatchdog
 from .gpu_power import feedforward_offset
 from tools.localization import tr
@@ -779,14 +782,52 @@ class AppServices(QObject):
                     target = raw_target
                 gpu_target = target
 
-            percent = next_fan_percent(
-                self.state.get_applied_fan_speed_percent(),
-                target,
-            )
-            gpu_percent = next_fan_percent(
-                self.state.get_applied_gpu_fan_percent(),
-                gpu_target,
-            )
+            # Ramp shaping (auto mode): curve-driven rises glide instead of
+            # jumping, and same-tick start surges are staggered one channel
+            # apart, so a burst reads as a ramp instead of two fans spinning
+            # up in lockstep.  Custom mode always jumps.
+            prev_cpu = self.state.get_applied_fan_speed_percent()
+            prev_gpu = self.state.get_applied_gpu_fan_percent()
+            cpu_bad = cpu_temp == TEMP_READ_ERROR_VALUE
+            gpu_bad = gpu_temp == TEMP_READ_ERROR_VALUE and not gpu_asleep
+            cpu_safety = max(self._cpu_guard_floor,
+                             FAULT_TARGET_BOTH if cpu_bad else 0)
+            gpu_safety = (0 if gpu_asleep else
+                          max(self._gpu_guard_floor,
+                              FAULT_TARGET_ONE if gpu_bad else 0))
+            # applied == -1 marks a fresh session (mode/profile switch,
+            # resume): the first cycle jumps fully.  Afterwards curve rises
+            # glide; guard/fault floors bypass the glide in every case, and
+            # the independent thermal-guard thread still owns EC floors.
+            cpu_up = (UP_STEP_PERCENT if mode == FAN_MODE_AUTO
+                      and prev_cpu >= 0 else None)
+            gpu_up = (UP_STEP_PERCENT if mode == FAN_MODE_AUTO
+                      and prev_gpu >= 0 else None)
+            if split:
+                percent = next_fan_percent(prev_cpu, target,
+                                           cpu_safety, cpu_up)
+                gpu_percent = next_fan_percent(prev_gpu, gpu_target,
+                                               gpu_safety, gpu_up)
+            else:
+                # One shared duty in mirrored mode: fold both channels'
+                # safety floors, matching select_fan_target's overlay.
+                mirror_safety = max(cpu_safety, gpu_safety)
+                percent = next_fan_percent(prev_cpu, target,
+                                           mirror_safety, cpu_up)
+                gpu_percent = next_fan_percent(prev_gpu, gpu_target,
+                                               mirror_safety, gpu_up)
+            if (cpu_up is not None and gpu_up is not None
+                    and prev_cpu <= 0 and prev_gpu <= 0
+                    and percent > 0 and gpu_percent > 0):
+                # Both channels would fire the 57-raw minimum-spin start
+                # surge in the same tick; hold the smaller starter one tick
+                # so the inrush and its noise arrive separately.  The held
+                # channel's target state is already positive, so it starts
+                # on the next cycle untouched.
+                if percent >= gpu_percent:
+                    gpu_percent = 0
+                else:
+                    percent = 0
             self._update_fan_stall(percent, gpu_percent, fan1_rpm, fan2_rpm, gpu_asleep)
             self._update_hot_alert(cpu_temp, gpu_temp, gpu_asleep)
 

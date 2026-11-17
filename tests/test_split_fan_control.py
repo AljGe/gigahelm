@@ -73,27 +73,36 @@ class FakeWMI:
         return 0
 
 
+def run_one_cycle(svc):
+    svc._last_wmi_recovery_attempt = 0.0
+    svc.controller_timer.stop()
+    svc._recover_wmi_if_due()
+
+
+def make_cycle_service(case, profile_config):
+    """Build an AppServices with a profile loaded, hermetic at elevation:
+    see tests/test_gpu_feedforward.py — without the WMIInterface.start patch,
+    profile activation drives one live cycle through the REAL WMI worker and
+    latches _cycle_in_flight forever."""
+    patcher = patch.object(wmi_module.WMIInterface, "start",
+                           return_value=False)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+    tmp = tempfile.mkdtemp(prefix="gigahelm-split-")
+    state = AppState(path_manager=PathManager(
+        base_dir=tmp, executable_path="python.exe", main_script_path=""))
+    svc = AppServices(state=state)
+    state.load_profiles_from_config({"Game": profile_config}, ["Game"])
+    state.set_active_profile_name("Game")
+    return state, svc
+
+
 class SplitFanCycleTests(unittest.TestCase):
     def _make_service(self, profile_config):
-        # Hermetic at elevation: see tests/test_gpu_feedforward.py — without
-        # this patch, profile activation drives one live cycle through the
-        # REAL WMI worker and latches _cycle_in_flight forever.
-        patcher = patch.object(wmi_module.WMIInterface, "start",
-                               return_value=False)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        tmp = tempfile.mkdtemp(prefix="gigahelm-split-")
-        state = AppState(path_manager=PathManager(
-            base_dir=tmp, executable_path="python.exe", main_script_path=""))
-        svc = AppServices(state=state)
-        state.load_profiles_from_config({"Game": profile_config}, ["Game"])
-        state.set_active_profile_name("Game")
-        return state, svc
+        return make_cycle_service(self, profile_config)
 
     def _run_cycle(self, svc):
-        svc._last_wmi_recovery_attempt = 0.0
-        svc.controller_timer.stop()
-        svc._recover_wmi_if_due()
+        run_one_cycle(svc)
 
     def test_split_on_cool_gpu_keeps_gpu_channel_off(self):
         # cpu 55 degC -> CPU curve 30 %; gpu 40 degC -> GPU curve 0 %.
@@ -193,6 +202,63 @@ class FanRpmPairingTests(unittest.TestCase):
         # CPU duty channel -> fan1.
         self.assertEqual(data["fan1_rpm"], 2222)
         self.assertEqual(data["fan2_rpm"], 1111)
+
+
+class RampShapingCycleTests(unittest.TestCase):
+    """Auto-mode ramp shaping on a continuous control session: curve rises
+    glide UP_STEP_PERCENT per tick, guard floors bypass the glide, and
+    same-tick start surges stagger one channel apart.  First cycles after a
+    reset (profile/mode switch, resume) keep the immediate jump - covered by
+    the tests above, which all assert full targets on cycle one."""
+
+    AUTO_CFG = {"fan_mode": "auto", "cpu_fan_table": CURVE,
+                "gpu_fan_table": CURVE, "gpu_power_feedforward": False,
+                "split_fan_control": True}
+
+    def _establish(self, cpu_temp, gpu_temp):
+        state, svc = make_cycle_service(self, dict(self.AUTO_CFG))
+        wmi = FakeWMI(cpu_temp=cpu_temp, gpu_temp=gpu_temp)
+        svc.wmi_interface = wmi
+        run_one_cycle(svc)  # fresh session: jumps to the curve target
+        return state, svc, wmi
+
+    def test_curve_rise_glides_after_session_established(self):
+        # 55 degC -> 30 %; then 75 degC: EMA 65 -> curve 50, glide caps the
+        # rise at 30 + 10; the next EMA step carries the glide onward.
+        state, svc, wmi = self._establish(55.0, 40.0)
+        self.assertEqual(state.get_applied_fan_speed_percent(), 30)
+        wmi.cpu_temp = 75.0
+        run_one_cycle(svc)
+        self.assertEqual(state.get_applied_fan_speed_percent(), 40)
+        run_one_cycle(svc)
+        self.assertEqual(state.get_applied_fan_speed_percent(), 50)
+
+    def test_guard_floor_bypasses_glide(self):
+        # Continuous session at 30 %; raw 91 degC engages the 80 % floor and
+        # the channel must jump in one tick, not glide.
+        state, svc, wmi = self._establish(55.0, 40.0)
+        wmi.cpu_temp = 91.0
+        run_one_cycle(svc)
+        self.assertEqual(state.get_applied_fan_speed_percent(), 80)
+        self.assertEqual(
+            svc.wmi_interface.applies[-1]["cpu_duty_raw"],
+            float(percent_to_raw(80)))
+
+    def test_same_tick_start_surge_staggers(self):
+        # Both channels off (curve zero on both dies), then both cross their
+        # knees in the same tick: CPU leads, GPU starts one cycle later.
+        state, svc, wmi = self._establish(40.0, 40.0)
+        self.assertEqual(state.get_applied_fan_speed_percent(), 0)
+        self.assertEqual(state.get_applied_gpu_fan_percent(), 0)
+        wmi.cpu_temp = 70.0
+        wmi.gpu_temp = 70.0
+        run_one_cycle(svc)
+        lead = svc.wmi_interface.applies[-1]
+        self.assertEqual(lead["cpu_duty_raw"], float(percent_to_raw(10)))
+        self.assertEqual(lead["gpu_duty_raw"], 0.0)
+        run_one_cycle(svc)
+        follow = svc.wmi_interface.applies[-1]
+        self.assertEqual(follow["gpu_duty_raw"], float(percent_to_raw(10)))
 
 
 if __name__ == "__main__":
