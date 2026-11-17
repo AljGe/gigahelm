@@ -2,8 +2,8 @@
 import unittest
 
 from core.fan_ramp import (
-    DOWN_STEP_PERCENT, START_FROM_ZERO_PERCENT, ZERO_RELEASE_TICKS,
-    next_fan_percent, next_target,
+    DOWN_STEP_PERCENT, START_FROM_ZERO_PERCENT, UP_STEP_PERCENT,
+    ZERO_RELEASE_TICKS, next_fan_percent, next_target,
 )
 
 
@@ -43,6 +43,42 @@ class FanRampTests(unittest.TestCase):
 
     def test_negative_applied_is_zero(self):
         self.assertEqual(next_fan_percent(-1, 60), 60)
+
+
+class UpGlideTests(unittest.TestCase):
+    """Curve-driven rises glide instead of jumping; a safety floor above the
+    applied duty bypasses the glide so thermal headroom is never queued."""
+
+    def test_default_call_jumps(self):
+        # Custom mode / fresh sessions keep the immediate jump.
+        self.assertEqual(next_fan_percent(20, 80), 80)
+
+    def test_curve_rise_glide_steps(self):
+        self.assertEqual(
+            next_fan_percent(30, 44, 0, UP_STEP_PERCENT), 30 + UP_STEP_PERCENT)
+        self.assertEqual(next_fan_percent(40, 44, 0, UP_STEP_PERCENT), 44)
+
+    def test_glide_converges(self):
+        applied = 25
+        steps = 0
+        while applied < 60:
+            applied = next_fan_percent(applied, 60, 0, UP_STEP_PERCENT)
+            steps += 1
+            self.assertLess(steps, 10)
+        self.assertEqual(applied, 60)
+
+    def test_safety_floor_bypasses_glide(self):
+        self.assertEqual(next_fan_percent(30, 44, 50, UP_STEP_PERCENT), 44)
+        self.assertEqual(next_fan_percent(30, 35, 40, UP_STEP_PERCENT), 35)
+
+    def test_floor_at_or_below_applied_still_glides(self):
+        self.assertEqual(
+            next_fan_percent(30, 44, 30, UP_STEP_PERCENT), 30 + UP_STEP_PERCENT)
+
+    def test_downs_untouched_by_glide_arguments(self):
+        self.assertEqual(
+            next_fan_percent(40, 15, 0, UP_STEP_PERCENT),
+            40 - DOWN_STEP_PERCENT)
 
 
 class TargetHysteresisTests(unittest.TestCase):

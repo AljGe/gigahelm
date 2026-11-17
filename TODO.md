@@ -61,6 +61,15 @@ Endurance: all-core median discharge 99.1 W → ~54 min from 90 % on battery.
    concat of `bench-small.jsonl` + `bench-battery.jsonl`); prune stale
    selftest rows from default `bench.jsonl`; optional short README in
    `tools/bench/`.
+7. **Ramp-shaping A/B (noise).** v2.3.1 glides curve-driven up-ramps
+   (`UP_STEP_PERCENT = 10`/tick, guard floors bypass) and staggers same-tick
+   start surges one channel apart. Thermals are covered by unit tests + the
+   guard bypass; what needs ears is perception: run a workload that crosses a
+   curve knee with and without the shaping (`tools/bench/split_ab.py` or a
+   plain game), confirm the ramp reads as a glide and no transition got
+   *more* annoying (longer mid-glide at moderate duty is the known tradeoff).
+   If `UP_STEP_PERCENT = 10` still surges audibly, try 7; if it feels
+   laggy on burst launches, the NVML feed-forward already leads — leave it.
 
 ### Not worth optimizing (measured)
 
