@@ -12,6 +12,7 @@ from config.settings import (
     FAN_MODE_BIOS, FAN_MODE_AUTO, FAN_MODE_CUSTOM, FAN_MODE_UNKNOWN,
     BATTERY_POLICY_CODES, MIN_FAN_PERCENT, MAX_FAN_PERCENT,
     MIN_CHARGE_PERCENT, MAX_CHARGE_PERCENT, MIN_CURVE_POINTS,
+    TEMP_READ_ERROR_VALUE,
 )
 from core.interpolation import clip
 from core.path_manager import PathManager
@@ -170,6 +171,10 @@ class AppState(QObject):
 
     cpu_temp_changed = Signal(float)
     gpu_temp_changed = Signal(float)
+    # EMA-smoothed control temps (TEMP_SMOOTH_ALPHA): display-only mirror of
+    # AppServices._cpu_ctrl_temp/_gpu_ctrl_temp for the curve canvas.
+    cpu_ctrl_temp_changed = Signal(float)
+    gpu_ctrl_temp_changed = Signal(float)
     gpu_asleep_changed = Signal(bool)
     # NVML GPU utilization percent, -1 = unknown (asleep / poll paused).
     gpu_util_changed = Signal(int)
@@ -212,6 +217,10 @@ class AppState(QObject):
         # 瞬时状态
         self._cpu_temp: float = 0.0
         self._gpu_temp: float = 0.0
+        # EMA control temps as seen by the controller; TEMP_READ_ERROR_VALUE
+        # until the first valid control cycle (canvas hides the marker).
+        self._cpu_ctrl_temp: float = TEMP_READ_ERROR_VALUE
+        self._gpu_ctrl_temp: float = TEMP_READ_ERROR_VALUE
         self._gpu_asleep: bool = False
         self._gpu_util: int = -1
         # 重命名
@@ -290,6 +299,14 @@ class AppState(QObject):
     def get_gpu_temp(self) -> float: return self._gpu_temp
     def set_gpu_temp(self, value: float): self._set_value('_gpu_temp', value, self.gpu_temp_changed)
     gpu_temp = Property(float, get_gpu_temp, set_gpu_temp, notify=gpu_temp_changed) # type: ignore
+
+    def get_cpu_ctrl_temp(self) -> float: return self._cpu_ctrl_temp
+    def set_cpu_ctrl_temp(self, value: float): self._set_value('_cpu_ctrl_temp', value, self.cpu_ctrl_temp_changed)
+    cpu_ctrl_temp = Property(float, get_cpu_ctrl_temp, set_cpu_ctrl_temp, notify=cpu_ctrl_temp_changed) # type: ignore
+
+    def get_gpu_ctrl_temp(self) -> float: return self._gpu_ctrl_temp
+    def set_gpu_ctrl_temp(self, value: float): self._set_value('_gpu_ctrl_temp', value, self.gpu_ctrl_temp_changed)
+    gpu_ctrl_temp = Property(float, get_gpu_ctrl_temp, set_gpu_ctrl_temp, notify=gpu_ctrl_temp_changed) # type: ignore
 
     def get_gpu_asleep(self) -> bool: return self._gpu_asleep
     def set_gpu_asleep(self, value: bool): self._set_value('_gpu_asleep', value, self.gpu_asleep_changed)
