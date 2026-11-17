@@ -54,7 +54,8 @@ Gigahelm is a lightweight yet powerful utility designed for Gigabyte laptops, of
             *   **Right-Click:** Open the actions menu — activate, save the current settings into that profile, or rename/delete it.
         *   **"+" Button:** Create a new profile based on the currently active one.
         *   **Reset:** Resets the currently selected fan curve (CPU or GPU) to its default points.
-        *   **Curve Canvas:** The interactive graph for editing fan curves. Drag points to adjust the temperature-to-fan-speed mapping; the curve cascades to stay logical. Double-click empty space to add a point, right-click a point to delete it.
+        *   **Curve Canvas:** The interactive graph for editing fan curves. Drag points to adjust the temperature-to-fan-speed mapping (points keep a 1 °C distance from their neighbours and stay inside the plot edges, so overlapping points can no longer occur). Double-click empty space to add a point, right-click a point to delete it.
+        *   **Legend:** Below the profile chips — CPU curve (blue), GPU curve (green), EMA operating point (hollow ring), safety floor (red dashes). The hollow ring marks the EMA-smoothed temperature the controller actually acts on; the dotted crosshairs show the raw sensor reading.
     *   **Theme switch:** The button next to the language selector cycles System → Dark → Light, and the choice is remembered.
     *   **Start on Boot:** The checkbox in the footer starts the application with Windows (via Task Scheduler).
     *   **Action notifications:** The footer checkbox turns the profile/charge balloon confirmations on or off; fault and thermal alerts always show.
