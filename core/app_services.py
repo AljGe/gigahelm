@@ -14,7 +14,7 @@ from gui.qt import QObject, Slot, QTimer
 from .wmi_interface import WMIInterface, WMIError
 from .auto_temp_controller import AutoTemperatureController
 from .state import AppState, ProfileState
-from .fan_duty import percent_to_raw
+from .fan_duty import percent_to_raw, effective_percent
 from .fan_ramp import next_fan_percent, next_target
 from .fan_target import guard_floor, select_fan_target
 from .thermal_guard import ThermalGuardWatchdog
@@ -111,6 +111,14 @@ class AppServices(QObject):
         self._charge_watch_timer.start(CHARGE_WATCH_INTERVAL_MS)
         self._charge_verify_in_flight = False
         self._last_charge_write_ms = 0.0
+        # Visibility-independent WMI watchdog: on_gui_tick is the other recovery
+        # driver and it stops while the window is hidden, so a failed
+        # recover_after_resume() would leave the control loop dead in the tray
+        # (fans latched at the last duty) until the window is shown.
+        self._recovery_timer = QTimer(self)
+        self._recovery_timer.setInterval(15000)
+        self._recovery_timer.timeout.connect(self._recover_if_dead)
+        self._recovery_timer.start()
         # Sustained-hot balloon state (see _update_hot_alert).
         self._hot_alert_cycles = 0
         self._hot_alert_active = False
@@ -190,6 +198,11 @@ class AppServices(QObject):
             controller_interval = self._current_profile.get_value('controller_update_interval_ms')
             if self.controller_timer.interval() != controller_interval:
                 self.controller_timer.setInterval(controller_interval)
+            # Mirror the NVML poll gate outside control cycles: this runs on
+            # profile activation and appearance_changed, so BIOS mode and
+            # pre-first-cycle states also drop a stale/default poll gate.
+            self.wmi_interface.set_nvml_poll_enabled(
+                bool(self._current_profile.get_value("gpu_power_feedforward", True)))
 
     def initialize_wmi(self) -> bool:
         if not self.wmi_interface.start():
@@ -214,6 +227,7 @@ class AppServices(QObject):
         if self._resume_timer.isActive():
             self._resume_timer.stop()
         self._charge_watch_timer.stop()
+        self._recovery_timer.stop()
         if self.state.get_applied_fan_mode() != FAN_MODE_BIOS and not self._fan_emergency_latched():
             print("Graceful exit: handing fan control back to BIOS...")
             try:
@@ -320,6 +334,12 @@ class AppServices(QObject):
         else:
             self._log_control_event("wmi recovery failed")
             self.state.set_controller_status_message(tr("wmi_error"))
+
+    @Slot()
+    def _recover_if_dead(self):
+        if self._is_shutting_down or self.wmi_interface.is_running:
+            return
+        self._recover_wmi_if_due()
 
     def recover_after_resume(self):
         """重建 WMI。自动模式在恢复后立刻写一次风扇速度。"""
@@ -509,7 +529,7 @@ class AppServices(QObject):
             # Reflect EC truth in the UI regardless of whether we rewrite.
             self._update_state_from_sensor_data({"charge_policy": applied_code})
         desired = self._current_profile.get_battery_charge_policy()
-        if desired is None or applied_code < 0:
+        if desired is None or desired not in BATTERY_POLICY_CODES or applied_code < 0:
             return
         applied_name = BATTERY_CODE_POLICIES.get(applied_code)
         drifted = applied_name != desired
@@ -795,7 +815,7 @@ class AppServices(QObject):
                 self._last_stall_message = tr(
                     "fan_stall_warning",
                     fans=", ".join(stalled_fans),
-                    duty=int(percent),
+                    duty=effective_percent(percent),
                 )
                 self.state.set_controller_status_message(self._last_stall_message)
         elif self._fan1_stall_cycles == 0 and self._fan2_stall_cycles == 0:
