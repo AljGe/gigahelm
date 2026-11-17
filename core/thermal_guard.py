@@ -30,6 +30,7 @@ from config.settings import (
     SET_GPU_FAN_DUTY, SET_STEP_FAN_STATUS, SET_SUPER_QUIET,
 )
 from core.fan_target import GUARD_RELEASE_C, THERMAL_GUARDS
+from core.fan_duty import percent_to_raw
 from tools.system_utils import set_thread_priority_above_normal
 
 #: EC duty word ceiling (percent_to_raw(100)).
@@ -160,7 +161,7 @@ class ThermalGuardWatchdog(threading.Thread):
             return None
 
     def _force_floor(self, setter, floor: int) -> None:
-        duty_raw = floor / 100.0 * self._duty_raw_max
+        duty_raw = float(percent_to_raw(floor))
         writes = (
             (SET_CUSTOM_FAN_STATUS, 1.0),
             (SET_SUPER_QUIET, 0.0),

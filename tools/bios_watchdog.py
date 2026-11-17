@@ -23,6 +23,24 @@ from config.settings import (
 
 ERROR_ALREADY_EXISTS = 183
 
+TH32CS_SNAPPROCESS = 0x2
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.wintypes.DWORD),
+        ("cntUsage", ctypes.wintypes.DWORD),
+        ("th32ProcessID", ctypes.wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.wintypes.DWORD),
+        ("cntThreads", ctypes.wintypes.DWORD),
+        ("th32ParentProcessID", ctypes.wintypes.DWORD),
+        ("pcPriClassBase", ctypes.wintypes.LONG),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("szExeFile", ctypes.wintypes.WCHAR * 260),
+    ]
+
 
 def _base_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -67,6 +85,55 @@ def _instance_running() -> bool:
             kernel32.ReleaseMutex(mutex)
         kernel32.CloseHandle(mutex)
     return bool(already_exists)
+
+
+def _local_holder_running(base_dir: str) -> Optional[bool]:
+    """True when a live process's image sits under base_dir (this install
+    owns the Global mutex), False when the holder is from another data home
+    (e.g. a script-mode run from the repo), None when the process walk fails
+    (caller falls back to the legacy heartbeat-only behavior)."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+    kernel32.Process32FirstW.restype = ctypes.wintypes.BOOL
+    kernel32.Process32FirstW.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    kernel32.Process32NextW.restype = ctypes.wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+    kernel32.QueryFullProcessImageNameW.restype = ctypes.wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+        ctypes.wintypes.LPWSTR, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == ctypes.c_size_t(-1).value:
+        return None
+    prefix = os.path.normcase(base_dir) + os.sep
+    try:
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return None
+        while True:
+            pid = entry.th32ProcessID
+            if pid and pid != os.getpid():
+                handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if handle:
+                    try:
+                        size = ctypes.wintypes.DWORD(1024)
+                        image = ctypes.create_unicode_buffer(size.value)
+                        if kernel32.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(size)):
+                            if os.path.normcase(image.value).startswith(prefix):
+                                return True
+                    finally:
+                        kernel32.CloseHandle(handle)
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+        return False
+    finally:
+        kernel32.CloseHandle(snapshot)
 
 
 def _write_bios_state(base_dir: str) -> None:
@@ -118,6 +185,10 @@ def run_bios_revert_watchdog(base_dir: Optional[str] = None) -> int:
         _log(base_dir, f"error checking mutex: {error!r}")
         return 1
     if running:
+        holder_here = _local_holder_running(base_dir)
+        if holder_here is False:
+            _log(base_dir, "skip: mutex held by a process from another install/data home")
+            return 0
         age = _heartbeat_age(base_dir)
         if age is not None and age <= WATCHDOG_HEARTBEAT_STALE_S:
             _log(base_dir, f"skip: app heartbeat is fresh ({age:.1f}s)")

@@ -118,6 +118,7 @@ class BaseControlPanel(QFrame):
         getattr(self.state, self.config["app_state_value_attr"] + "_changed").connect(
             self._update_value_display
         )
+        self.state.active_profile_changed.connect(self._on_active_profile_changed)
 
         if self.config.get("is_fan_control", False):
             self.state.is_fan_control_panel_enabled_changed.connect(
@@ -130,6 +131,13 @@ class BaseControlPanel(QFrame):
         """Hook for subclasses: subscribe to the signals their live row shows."""
 
     # ------------------------------------------------------------- intent ---
+    @Slot()
+    def _on_active_profile_changed(self, *_args) -> None:
+        # A pending slider commit must not land in the profile that just became
+        # active (AC/battery binding switches mid-drag write into the wrong profile).
+        self._pending_slider_value = None
+        self.slider_debounce_timer.stop()
+
     @Slot(str)
     def _on_mode_selected(self, mode_name: str) -> None:
         self.profile_manager.update_active_profile_data(self.config["profile_mode_attr"], mode_name)

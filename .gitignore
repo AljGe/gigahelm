@@ -27,3 +27,13 @@ build.bat
 
 # Bench harness outputs
 tools/bench/results/
+
+# Runtime state/log files (script-mode data home lives in the repo dir)
+*.state
+thermal_guard.log
+thermal_guard.log.old
+control_loop.log
+control_loop.log.old
+bios_watchdog.log
+emergency.log
+crash.log

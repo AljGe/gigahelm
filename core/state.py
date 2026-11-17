@@ -7,8 +7,71 @@
 import copy
 from gui.qt import QObject, Signal, Property, Slot
 from typing import List, Dict, Optional, Any, cast
-from config.settings import DEFAULT_PROFILE_SETTINGS, DEFAULT_THEME_MODE, THEME_MODES
+from config.settings import (
+    DEFAULT_PROFILE_SETTINGS, DEFAULT_THEME_MODE, THEME_MODES,
+    FAN_MODE_BIOS, FAN_MODE_AUTO, FAN_MODE_CUSTOM, FAN_MODE_UNKNOWN,
+    BATTERY_POLICY_CODES, MIN_FAN_PERCENT, MAX_FAN_PERCENT,
+    MIN_CHARGE_PERCENT, MAX_CHARGE_PERCENT, MIN_CURVE_POINTS,
+)
+from core.interpolation import clip
 from core.path_manager import PathManager
+
+
+def _as_number(value: Any) -> Optional[float]:
+    """Numeric (non-bool) value as float, else None. Config data is untrusted."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _valid_curve_points(value: Any) -> List[List[Any]]:
+    """2-element numeric [temp, speed] rows; speed clipped to 0..100.
+    Temperatures are kept as-is (AutoTemperatureController sorts/validates)."""
+    points: List[List[Any]] = []
+    if isinstance(value, list):
+        for point in value:
+            if (isinstance(point, (list, tuple)) and len(point) == 2
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                            for v in point)):
+                points.append([point[0],
+                               int(round(clip(point[1], MIN_FAN_PERCENT, MAX_FAN_PERCENT)))])
+    return points
+
+
+def _sanitize_profile_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Hand-edited or corrupted control_config.json must never produce a
+    zombie fan mode, an unmapped charge policy, or an empty curve: every
+    behavioral key is validated; anything invalid falls back to the shipped
+    default (DEFAULT_PROFILE_SETTINGS). Appearance keys pass through as before."""
+    final = copy.deepcopy(DEFAULT_PROFILE_SETTINGS)
+    for key in DEFAULT_PROFILE_SETTINGS:
+        if key not in data:
+            continue
+        value = data[key]
+        if key == "fan_mode":
+            if value in (FAN_MODE_BIOS, FAN_MODE_AUTO, FAN_MODE_CUSTOM):
+                final[key] = value
+        elif key == "battery_charge_policy":
+            if value in BATTERY_POLICY_CODES:
+                final[key] = value
+        elif key == "custom_fan_speed":
+            number = _as_number(value)
+            if number is not None:
+                final[key] = int(round(clip(number, MIN_FAN_PERCENT, MAX_FAN_PERCENT)))
+        elif key == "battery_charge_threshold":
+            number = _as_number(value)
+            if number is not None:
+                final[key] = int(round(clip(number, MIN_CHARGE_PERCENT, MAX_CHARGE_PERCENT)))
+        elif key in ("cpu_fan_table", "gpu_fan_table"):
+            points = _valid_curve_points(value)
+            if len(points) >= MIN_CURVE_POINTS:
+                final[key] = points
+        elif key == "gpu_power_feedforward":
+            if isinstance(value, bool):
+                final[key] = value
+        else:
+            final[key] = value
+    return final
 
 class ProfileState(QObject):
     """
@@ -46,15 +109,7 @@ class ProfileState(QObject):
         return copy.deepcopy(self._data)
 
     def from_dict(self, data: Dict[str, Any]):
-        final_data = copy.deepcopy(DEFAULT_PROFILE_SETTINGS)
-        # 只接受仍存在的键：旧配置里的颜色键在保存时被自然丢弃
-        for key in DEFAULT_PROFILE_SETTINGS:
-            if key in data:
-                final_data[key] = data[key]
-
-        for key in ['cpu_fan_table', 'gpu_fan_table']:
-            if key in final_data and final_data[key]:
-                final_data[key] = [list(point) for point in final_data[key]]
+        final_data = _sanitize_profile_data(data)
 
         self.set_fan_mode(final_data['fan_mode'])
         self.set_custom_fan_speed(final_data['custom_fan_speed'])
@@ -70,7 +125,7 @@ class ProfileState(QObject):
             if self._data.get(key) != value:
                 self._data[key] = value
                 appearance_changed = True
-        
+
         if appearance_changed:
             self.appearance_changed.emit()
 
@@ -112,7 +167,7 @@ class AppState(QObject):
     profile_on_battery_changed = Signal(str)
     active_profile_changed = Signal(ProfileState)
     profiles_list_changed = Signal(list, str) # names, active_name
-    
+
     cpu_temp_changed = Signal(float)
     gpu_temp_changed = Signal(float)
     gpu_asleep_changed = Signal(bool)
@@ -166,11 +221,11 @@ class AppState(QObject):
         self._battery_health: int = -1
         self._battery_cycles: int = -1
         self._battery_percent: int = -1
-        self._applied_fan_mode: str = "auto"
+        self._applied_fan_mode: str = FAN_MODE_UNKNOWN
         self._applied_fan_speed_percent: int = 0
         self._auto_fan_target_speed_percent: int = 0
         self._applied_charge_policy: str = "bios"
-        self._applied_charge_threshold: int = 100
+        self._applied_charge_threshold: int = -1
         self._is_fan_control_panel_enabled: bool = True
         self._active_curve_type: str = "cpu"
         self._controller_status_message: str = ""
@@ -226,7 +281,7 @@ class AppState(QObject):
 
     def get_profile_names(self) -> List[str]: return self.profile_order
     profile_names = Property(list, get_profile_names, notify=profiles_list_changed) # type: ignore
-        
+
     # --- 瞬时状态属性 ---
     def get_cpu_temp(self) -> float: return self._cpu_temp
     def set_cpu_temp(self, value: float): self._set_value('_cpu_temp', value, self.cpu_temp_changed)
@@ -268,7 +323,6 @@ class AppState(QObject):
     def set_battery_percent(self, value: int): self._set_value('_battery_percent', value, self.battery_percent_changed)
     battery_percent = Property(int, get_battery_percent, set_battery_percent, notify=battery_percent_changed) # type: ignore
 
-    
     def get_applied_fan_mode(self) -> str: return self._applied_fan_mode
     def set_applied_fan_mode(self, value: str): self._set_value('_applied_fan_mode', value, self.applied_fan_mode_changed)
     applied_fan_mode = Property(str, get_applied_fan_mode, set_applied_fan_mode, notify=applied_fan_mode_changed) # type: ignore
@@ -284,7 +338,7 @@ class AppState(QObject):
     def get_applied_charge_policy(self) -> str: return self._applied_charge_policy
     def set_applied_charge_policy(self, value: str): self._set_value('_applied_charge_policy', value, self.applied_charge_policy_changed)
     applied_charge_policy = Property(str, get_applied_charge_policy, set_applied_charge_policy, notify=applied_charge_policy_changed) # type: ignore
-    
+
     def get_applied_charge_threshold(self) -> int: return self._applied_charge_threshold
     def set_applied_charge_threshold(self, value: int): self._set_value('_applied_charge_threshold', value, self.applied_charge_threshold_changed)
     applied_charge_threshold = Property(int, get_applied_charge_threshold, set_applied_charge_threshold, notify=applied_charge_threshold_changed) # type: ignore
@@ -304,17 +358,17 @@ class AppState(QObject):
     def get_gui_update_interval_ms(self) -> int: return self._gui_update_interval_ms
     def set_gui_update_interval_ms(self, value: int): self._set_value('_gui_update_interval_ms', value, self.gui_update_interval_ms_changed)
     gui_update_interval_ms = Property(int, get_gui_update_interval_ms, set_gui_update_interval_ms, notify=gui_update_interval_ms_changed) # type: ignore
-    
+
     # --- 配置文件管理方法 ---
     def get_profile(self, name: str) -> Optional[ProfileState]:
         return self._profiles.get(name)
-        
+
     def add_profile(self, name: str, profile: ProfileState):
         if name not in self._profiles:
             self._profiles[name] = profile
             self.profile_order.append(name)
             self.profiles_list_changed.emit(self.get_profile_names(), self.active_profile_name or "")
-            
+
     def rename_profile(self, old_name: str, new_name: str):
         if old_name in self._profiles and new_name not in self._profiles:
             profile = self._profiles.pop(old_name)
@@ -324,7 +378,7 @@ class AppState(QObject):
                 self.profile_order[idx] = new_name
             except ValueError:
                 self.profile_order.append(new_name)
-            
+
             if self.active_profile_name == old_name:
                 self.set_active_profile_name(new_name)
             else:
@@ -335,7 +389,7 @@ class AppState(QObject):
             del self._profiles[name]
             if name in self.profile_order:
                 self.profile_order.remove(name)
-            
+
             if self.active_profile_name == name:
                 new_active_name = self.profile_order[0] if self.profile_order else None
                 if new_active_name:
@@ -345,8 +399,10 @@ class AppState(QObject):
 
     def get_profiles_for_config(self) -> Dict[str, Any]:
         return {name: profile.to_dict() for name, profile in self._profiles.items()}
-        
+
     def load_profiles_from_config(self, profiles_data: Dict[str, Any], profile_order: List[str]):
+        for old in self._profiles.values():
+            old.deleteLater()
         self._profiles.clear()
         self.profile_order = profile_order
         for name, profile_dict in profiles_data.items():

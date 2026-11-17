@@ -87,7 +87,7 @@ class MainWindow(QMainWindow):
         self.theme = theme
         self.start_minimized = start_minimized
         self.startup_cli_payload = startup_cli_payload or {}
-        
+
         self.tray_icon: Optional[QSystemTrayIcon] = None
         self._last_status_notified: Optional[str] = None
         self._is_quitting: bool = False
@@ -95,11 +95,11 @@ class MainWindow(QMainWindow):
         self._tray_close_hint_shown: bool = False
         self.status_clear_timer = QTimer(self)
         self.status_clear_timer.setSingleShot(True)
-        
+
         self.gui_update_timer = QTimer(self)
         self.command_poll_timer: Optional[QTimer] = None
         self._is_initialized: bool = False
-        
+
         self._apply_locale()
         self.init_ui()
         self.connect_signals()
@@ -162,9 +162,9 @@ class MainWindow(QMainWindow):
         self.title_bar.minimize_button.clicked.connect(self.showMinimized)
         self.title_bar.maximize_button.clicked.connect(self._toggle_maximize)
         self.title_bar.close_button.clicked.connect(self.close)
-        
+
         self.gui_tick.connect(self.app_services.on_gui_tick)
-        
+
         self.state.controller_status_message_changed.connect(self._update_status_bar)
         self.state.controller_status_message_changed.connect(self._on_controller_status_changed)
         self.state.language_changed.connect(self._on_language_changed_by_state)
@@ -286,7 +286,7 @@ class MainWindow(QMainWindow):
     def _update_status_bar(self, message: str):
         if self._is_showing_transient_status:
             return
-        text = tr(message) if message else ""
+        text = message or ""
         if text == tr("wmi_error"):
             level = "error"
         elif text == tr("paused"):
@@ -401,6 +401,12 @@ class MainWindow(QMainWindow):
 
     def _show_cli_notification(self, title_key: str, message: str, critical: bool = False):
         if not self.tray_icon:
+            # No tray (rare): faults must still surface; confirmations are droppable.
+            if critical and os.name == "nt":
+                try:
+                    ctypes.windll.user32.MessageBoxW(0, message, tr(title_key), 0x10)
+                except Exception:
+                    pass
             return
         # Fault and thermal alerts (critical=True) ignore the preference.
         if not critical and not self.state.get_notifications_enabled():
@@ -465,7 +471,7 @@ class MainWindow(QMainWindow):
         if not self._is_initialized:
             self._is_initialized = True
             QTimer.singleShot(0, lambda: self.window_initialized_signal.emit(int(self.winId())))
-        
+
         # 调用AppServices中的方法来处理UI可见性变化
         self.app_services.set_ui_visibility(True)
         self._start_gui_timer()
@@ -522,7 +528,7 @@ class MainWindow(QMainWindow):
                 # 不要用 msg.lParam，它在开启缩放的屏幕上返回物理像素，会导致底部控件被误判为窗口边缘
                 global_pos = QCursor.pos()
                 pos = self.mapFromGlobal(global_pos)
-                
+
                 # 仅在窗口化状态下检查边框用于缩放
                 if not self.isMaximized():
                     border = 8
@@ -530,7 +536,7 @@ class MainWindow(QMainWindow):
                     on_right = pos.x() > self.width() - border
                     on_top = pos.y() < border
                     on_bottom = pos.y() > self.height() - border
-                    
+
                     if on_top and on_left: return True, 13
                     if on_top and on_right: return True, 14
                     if on_bottom and on_left: return True, 16
@@ -539,12 +545,12 @@ class MainWindow(QMainWindow):
                     if on_right: return True, 11
                     if on_top: return True, 12
                     if on_bottom: return True, 15
-                
+
                 # 检查标题栏区域
                 if self.title_bar and pos.y() < self.title_bar.height():
                     local_pos = self.title_bar.mapFromGlobal(global_pos)
                     child = self.title_bar.childAt(local_pos)
-                    
+
                     # 递归检查，确保下拉框等复杂控件不会被误判为拖拽区
                     is_interactive = False
                     current_child = child
@@ -553,12 +559,12 @@ class MainWindow(QMainWindow):
                             is_interactive = True
                             break
                         current_child = current_child.parentWidget()
-                        
+
                     if is_interactive:
                         result = super().nativeEvent(event_type, message)
                         return (bool(result[0]), int(result[1])) if isinstance(result, (tuple, list)) and len(result) == 2 else (False, 0)
                     return True, 2 # HTCAPTION (返回 2 让 Windows 接管标题栏拖拽)
-            
+
             result = super().nativeEvent(event_type, message)
             return (bool(result[0]), int(result[1])) if isinstance(result, (tuple, list)) and len(result) == 2 else (False, 0)
 
