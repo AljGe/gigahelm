@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """Fan duty ramp and target hysteresis.
 
-The ramp is intentionally asymmetric: speed-ups are immediate, speed-downs are
-capped at 5 percentage points per control tick.  Every drop must converge - a
+The ramp is intentionally asymmetric: curve-driven speed-ups glide at
+UP_STEP_PERCENT per control tick (a burst reads as a ramp instead of one RPM
+jump), speed-downs are capped at 5 percentage points per tick, and a
+safety floor above the applied duty bypasses the up-glide entirely.
+Callers pass ``up_step=None`` for the old jump-immediately behavior
+(custom mode, a channel's first cycle in a fresh control session).
+Every drop must converge - a
 small drop may not be parked forever, otherwise the fans can sit at 25% raw
 PWM while the UI claims 1-10%.
 
@@ -18,6 +23,7 @@ ticks before a running fan is released to off.
 from typing import Optional, Tuple
 
 DOWN_STEP_PERCENT = 5
+UP_STEP_PERCENT = 10
 TARGET_HYSTERESIS_PERCENT = 2
 START_FROM_ZERO_PERCENT = 3
 ZERO_RELEASE_TICKS = 3
@@ -31,17 +37,24 @@ def _clamp_percent(value: int) -> int:
     return int(value)
 
 
-def next_fan_percent(applied: int, target: int) -> int:
+def next_fan_percent(applied: int, target: int,
+                     safety_floor: int = 0,
+                     up_step: Optional[int] = None) -> int:
     """Return the next duty.
 
-    Speed-ups apply immediately; speed-downs step DOWN_STEP_PERCENT per tick
-    and always converge.
+    Speed-downs step DOWN_STEP_PERCENT per tick and always converge.
+    Speed-ups depend on ``up_step``: ``None`` jumps immediately, otherwise a
+    curve-driven rise glides ``up_step`` points per tick.  A ``safety_floor``
+    (guard/fault) above the applied duty bypasses the glide - thermal
+    headroom is never queued behind noise shaping.
     """
     target = _clamp_percent(target)
     applied = _clamp_percent(applied)
 
     if target > applied:
-        return target
+        if up_step is None or safety_floor > applied:
+            return target
+        return min(target, applied + max(1, up_step))
     if target == applied:
         return applied
 
