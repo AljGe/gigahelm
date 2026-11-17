@@ -16,12 +16,6 @@ from config.settings import (
 )
 from core.interpolation import clip
 from core.path_manager import PathManager
-    applied_gpu_fan_percent_changed = Signal(int)
-        self._applied_gpu_fan_percent: int = 0
-    def get_applied_gpu_fan_percent(self) -> int: return self._applied_gpu_fan_percent
-    def set_applied_gpu_fan_percent(self, value: int): self._set_value('_applied_gpu_fan_percent', value, self.applied_gpu_fan_percent_changed)
-    applied_gpu_fan_percent = Property(int, get_applied_gpu_fan_percent, set_applied_gpu_fan_percent, notify=applied_gpu_fan_percent_changed) # type: ignore
-
 
 
 def _as_number(value: Any) -> Optional[float]:
@@ -193,6 +187,7 @@ class AppState(QObject):
     battery_percent_changed = Signal(int)
     applied_fan_mode_changed = Signal(str)
     applied_fan_speed_percent_changed = Signal(int)
+    applied_gpu_fan_percent_changed = Signal(int)
     auto_fan_target_speed_percent_changed = Signal(int)
     applied_charge_policy_changed = Signal(str)
     applied_charge_threshold_changed = Signal(int)
@@ -238,6 +233,7 @@ class AppState(QObject):
         self._battery_percent: int = -1
         self._applied_fan_mode: str = FAN_MODE_UNKNOWN
         self._applied_fan_speed_percent: int = 0
+        self._applied_gpu_fan_percent: int = 0
         self._auto_fan_target_speed_percent: int = 0
         self._applied_charge_policy: str = "bios"
         self._applied_charge_threshold: int = -1
@@ -353,6 +349,10 @@ class AppState(QObject):
     def get_applied_fan_speed_percent(self) -> int: return self._applied_fan_speed_percent
     def set_applied_fan_speed_percent(self, value: int): self._set_value('_applied_fan_speed_percent', value, self.applied_fan_speed_percent_changed)
     applied_fan_speed_percent = Property(int, get_applied_fan_speed_percent, set_applied_fan_speed_percent, notify=applied_fan_speed_percent_changed) # type: ignore
+
+    def get_applied_gpu_fan_percent(self) -> int: return self._applied_gpu_fan_percent
+    def set_applied_gpu_fan_percent(self, value: int): self._set_value('_applied_gpu_fan_percent', value, self.applied_gpu_fan_percent_changed)
+    applied_gpu_fan_percent = Property(int, get_applied_gpu_fan_percent, set_applied_gpu_fan_percent, notify=applied_gpu_fan_percent_changed) # type: ignore
 
     def get_auto_fan_target_speed_percent(self) -> int: return self._auto_fan_target_speed_percent
     def set_auto_fan_target_speed_percent(self, value: int): self._set_value('_auto_fan_target_speed_percent', value, self.auto_fan_target_speed_percent_changed)
