@@ -110,6 +110,7 @@ class WMIWorker(threading.Thread):
         self.initialization_complete = threading.Event()
         self._stop_event = threading.Event()
         self._latest_core_sensor_data: Dict[str, Any] = {}
+        self._core_sensor_ts: float = 0.0
         self._data_lock = threading.Lock()
         self._call_pending = False
 
@@ -231,11 +232,20 @@ class WMIWorker(threading.Thread):
         with self._data_lock:
             return self._latest_core_sensor_data.copy()
 
+    def get_core_sensor_age_ms(self) -> float:
+        """Age of the cached core sweep in ms; inf when never swept."""
+        with self._data_lock:
+            if self._core_sensor_ts <= 0.0:
+                return float('inf')
+            return (time.monotonic() - self._core_sensor_ts) * 1000.0
+
     def _dispatch(self, method_or_signal: Any, params: Dict[str, Any]) -> Any:
         """Smart dispatch: choose the WMI object/executor for one request."""
         if method_or_signal is WMIInternalSignal.POLL_CORE_SENSORS:
             result = self._get_core_sensors()
-            with self._data_lock: self._latest_core_sensor_data = result
+            with self._data_lock:
+                self._latest_core_sensor_data = result
+                self._core_sensor_ts = time.monotonic()
             return result
         if method_or_signal is WMIInternalSignal.APPLY_FAN_CONTROL:
             return self._apply_fan_control(
@@ -708,6 +718,13 @@ class WMIInterface(QObject):
             worker = self._worker_thread
         if not worker: return {}
         return worker.get_latest_core_sensor_data()
+
+    def get_core_sensor_age_ms(self) -> float:
+        """Cache age in ms; inf when no worker or no sweep has run yet."""
+        with self._lock:
+            worker = self._worker_thread
+        if not worker: return float('inf')
+        return worker.get_core_sensor_age_ms()
 
     def get_all_sensors_sync(self) -> Dict[str, Any]:
         """阻塞式地获取所有传感器数据（包括电池）。"""
