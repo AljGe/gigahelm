@@ -524,16 +524,17 @@ class LightweightCurveCanvas(QWidget):
         palette = self.theme.palette()
         cpu_temp = self.state.get_cpu_temp()
         gpu_temp = self.state.get_gpu_temp()
-        # Neutral grey: the crosshairs are measurement guides, not alarms —
-        # dot_cpu red read as an error state and spawned 'why are there red
-        # points' confusion. The chips keep their colour coding.
-        grey = QColor(palette.text_muted)
-        if cpu_temp != TEMP_READ_ERROR_VALUE and self.cpu_curve_data:
-            speed = self._get_target_speed_for_indicator(cpu_temp, 'cpu')
-            self._draw_indicator_lines(painter, cpu_temp, speed, grey)
-        if gpu_temp != TEMP_READ_ERROR_VALUE and self.gpu_curve_data:
-            speed = self._get_target_speed_for_indicator(gpu_temp, 'gpu')
-            self._draw_indicator_lines(painter, gpu_temp, speed, grey)
+        # Dotted guides in a dimmed shade of their curve's colour: ties each
+        # measurement to the curve it drives (blue CPU, green GPU) without
+        # reading as an alarm — dot_cpu red spawned 'why are there red
+        # points' confusion, plain grey felt disconnected from the curves.
+        for curve_type, temp in (('cpu', cpu_temp), ('gpu', gpu_temp)):
+            if temp == TEMP_READ_ERROR_VALUE or not self.get_curve_data(curve_type):
+                continue
+            speed = self._get_target_speed_for_indicator(temp, curve_type)
+            color = QColor(palette.curve_cpu if curve_type == 'cpu' else palette.curve_gpu)
+            color.setAlphaF(0.45)
+            self._draw_indicator_lines(painter, temp, speed, color)
 
     def _draw_indicator_lines(self, painter: QPainter, temp: float, speed: int, color: QColor):
         min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
