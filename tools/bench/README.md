@@ -1,6 +1,4 @@
 # Gigahelm bench harness
-| `split_ab.py` | A/B: mirrored vs split fan duty (`split_fan_control`) on the active profile; idle/dual/all × 240 s, interleaved arms; writes `results/split-ab-<arm>-<trial>.jsonl` + `split-ab-summary.json`; exit 0 = split control CPU-safe to default-on. NB: its nvidia-smi sampling pins the dGPU awake, so the idle trial cannot reach the 0-fan state — use `split_idle_check.py` for that proof |
-| `split_idle_check.py` | EC-only (NVML disabled) quiet-idle proof: waits for dGPU sleep/≤55 °C, then 240 s steady window where gpu_duty_raw and rpm2 must read 0; exit 0 = the split 0-fan promise holds |
 
 Empirical fan-curve characterization for the installed Gigahelm controller.
 Everything here is standalone (imports nothing from the app package tree)
@@ -21,6 +19,8 @@ and expects elevation for EC (`root\WMI GB_WMIACPI_*`) access.
 | `bench_chain.cmd` | Elevated chain: probe -> selftest -> bench |
 | `deploy_regress.cmd` | Deploy `dist\Gigahelm` + run the Gaming regression |
 | `experiment_gaming.py` | Regression: Gaming profile under 16-core load, 3 s sampling |
+| `split_ab.py` | A/B: mirrored vs split fan duty (`split_fan_control`) on the active profile; idle/dual/all × 240 s, interleaved arms; writes `results/split-ab-<arm>-<trial>.jsonl` + `split-ab-summary.json`; exit 0 = split control CPU-safe to default-on. NB: its nvidia-smi sampling pins the dGPU awake, so the idle trial cannot reach the 0-fan state — use `split_idle_check.py` for that proof |
+| `split_idle_check.py` | EC-only (NVML disabled) quiet-idle proof: waits for dGPU sleep/≤55 °C, then 240 s steady window where gpu_duty_raw and rpm2 must read 0; exit 0 = the split 0-fan promise holds |
 
 ## Usage
 
