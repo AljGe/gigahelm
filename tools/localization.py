@@ -53,7 +53,7 @@ DEFAULT_ENGLISH_TRANSLATIONS: Dict[str, str] = {
     # 工具提示
     "curve_point_tooltip": "Temp: {temp}°C, Speed: {speed}%",
     # 添加缺失的翻译键并提供有用的提示
-    "canvas_tooltip": "Double-click empty space to add a point.\nRight-click a point to delete it.\nSafety floors: 80°C→40%, 85°C→60%, 90°C→80%.\nHollow ring: EMA-smoothed operating point.",
+    "canvas_tooltip": "Double-click empty space to add a point.\nRight-click a point to delete it.\nSafety floors: 80°C→40%, 85°C→60%, 90°C→80%.\nHollow ring: EMA-smoothed operating point.\nDotted crosshairs: live CPU/GPU sensor position.",
     "legend_cpu_curve": "CPU curve",
     "legend_gpu_curve": "GPU curve",
     "legend_ema_point": "EMA operating point",
@@ -209,7 +209,7 @@ DEFAULT_CHINESE_TRANSLATIONS: Dict[str, str] = {
     # 工具提示
     "curve_point_tooltip": "温度: {temp}°C, 速度: {speed}%",
     # 添加缺失的翻译键并提供有用的提示
-    "canvas_tooltip": "双击空白区域以添加点。\n右键单击一个点以删除它。\n安全下限：80°C→40%，85°C→60%，90°C→80%。\n空心圆环：EMA 平滑后的工作点。",
+    "canvas_tooltip": "双击空白区域以添加点。\n右键单击一个点以删除它。\n安全下限：80°C→40%，85°C→60%，90°C→80%。\n空心圆环：EMA 平滑后的工作点。\n虚线十字线：CPU/GPU 实时传感器位置。",
     "legend_cpu_curve": "CPU 曲线",
     "legend_gpu_curve": "GPU 曲线",
     "legend_ema_point": "EMA 工作点",

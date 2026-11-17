@@ -21,7 +21,7 @@ from core.state import AppState  # noqa: E402
 from core.path_manager import PathManager  # noqa: E402
 from gui.theme import ThemeManager  # noqa: E402
 from gui.lightweight_curve_canvas import LightweightCurveCanvas  # noqa: E402
-from config.settings import MAX_TEMP_C, DEFAULT_MIN_DISPLAY_TEMP_C  # noqa: E402
+from config.settings import MAX_TEMP_C, DEFAULT_MIN_DISPLAY_TEMP_C, TEMP_READ_ERROR_VALUE  # noqa: E402
 
 
 class _StubProfileManager:
@@ -154,6 +154,29 @@ class AddPointSnapTests(unittest.TestCase):
         interpolator = canvas._get_cached_interpolator('cpu')
         self.assertIsNotNone(interpolator)
         self.assertAlmostEqual(interpolator(60), 35)
+
+
+class IndicatorChipTests(unittest.TestCase):
+    def setUp(self):
+        self.canvas = _make_canvas()
+        self.canvas.active_curve_type = 'cpu'
+        self.canvas.cpu_curve_data = [[50, 0], [60, 25], [80, 50]]
+        self.canvas.state.set_cpu_temp(53)
+
+    def test_chip_includes_ema_temperature(self):
+        self.canvas._cpu_ema_temp = 52.3
+        text = self.canvas._indicator_entries()[0][0]
+        self.assertIn("53", text)
+        self.assertIn("EMA 52", text)
+
+    def test_chip_omits_ema_when_unavailable(self):
+        text = self.canvas._indicator_entries()[0][0]
+        self.assertNotIn("EMA", text)
+
+    def test_chip_omits_ema_when_error_value(self):
+        self.canvas._cpu_ema_temp = TEMP_READ_ERROR_VALUE
+        text = self.canvas._indicator_entries()[0][0]
+        self.assertNotIn("EMA", text)
 
 
 if __name__ == "__main__":
