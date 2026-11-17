@@ -52,7 +52,83 @@ PROFILES_BATTERY_MIN_FRAC = 0.60
 BATTERY_START_MIN_FRAC = 0.90
 TUNED_AC = "Tuned AC"
 TUNED_BATTERY = "Tuned Battery"
-LADDER_PROFILE = "Bench-Ladder"
+# One profile per commanded duty: the 2026-11-16 night run showed that
+# editing a single Bench-Ladder profile in place is racy - the app's
+# debounced full-config save can clobber the bench's edit between the file
+# write and the app's reload, freezing the EC at a stale duty. Switching
+# profiles by NAME never failed, so the ladder switches between pre-created
+# profiles instead (created idempotently per run, removed at the end).
+LADDER_PROFILE_PREFIX = "Ladder-"
+LADDER_PROFILE = "Bench-Ladder"  # legacy name, cleaned up with the rest
+
+
+def ladder_profile_name(duty: int) -> str:
+    return f"{LADDER_PROFILE_PREFIX}{duty}"
+
+
+def ensure_ladder_profiles(cfg: dict, duties_by_power: dict) -> None:
+    """Create/refresh one custom-mode profile per commanded duty. Idempotent;
+    single atomic save."""
+    _, defaults = phase_donor_profile(cfg)
+    seen = set()
+    for duties in duties_by_power.values():
+        for duty in duties:
+            name = ladder_profile_name(duty)
+            if name in seen:
+                continue
+            seen.add(name)
+            appctl.ensure_profile(cfg, name, copy.deepcopy(defaults))
+            appctl.edit_profile(cfg, name, fan_mode="custom",
+                                custom_fan_speed=duty)
+    appctl.save_cfg_atomic(cfg)
+
+
+def remove_bench_owned_profiles() -> None:
+    """Drop Ladder-* (and the legacy Bench-Ladder) profiles after a run."""
+    cfg = appctl.load_cfg()
+    profiles = cfg.get("profiles", {})
+    doomed = [n for n in profiles
+              if n == LADDER_PROFILE or n.startswith(LADDER_PROFILE_PREFIX)]
+    if not doomed:
+        return
+    for name in doomed:
+        profiles.pop(name, None)
+    cfg["profile_order"] = [n for n in cfg.get("profile_order", [])
+                            if n not in doomed]
+    if cfg.get("active_profile_name") in doomed:
+        cfg["active_profile_name"] = next(
+            (n for n in cfg["profile_order"] if n in profiles), "")
+    appctl.save_cfg_atomic(cfg)
+    appctl._reload_via_cli()
+    print("[bench] bench-owned ladder profiles removed")
+
+
+def resolve_profile_names(cfg: dict) -> tuple[str, ...]:
+    """Profiles-phase set from the installed config.
+
+    The 2025 tuning-session names (Config 1 / Gaming / Silent) are long gone
+    from real configs; take up to three auto-mode profiles the user actually
+    has, excluding bench-owned ones. Falls back to any profile when none is
+    auto-mode (their fan_mode is left untouched; rows still characterize the
+    profile as the app drives it)."""
+    reserved = {LADDER_PROFILE, TUNED_AC, TUNED_BATTERY}
+    profiles = cfg.get("profiles", {})
+    names = [n for n, p in profiles.items() if n not in reserved]
+    autos = [n for n in names if profiles[n].get("fan_mode") == "auto"]
+    return tuple((autos or names)[:3])
+
+
+def phase_donor_profile(cfg: dict) -> tuple[str, dict]:
+    """(name, profile) donating defaults/gpu-table for bench-created profiles:
+    the first auto-mode profile outside bench ownership, else the first."""
+    profiles = cfg.get("profiles", {})
+    reserved = {LADDER_PROFILE, TUNED_AC, TUNED_BATTERY}
+    for name, profile in profiles.items():
+        if name not in reserved and profile.get("fan_mode") == "auto":
+            return name, profile
+    for name, profile in profiles.items():
+        return name, profile
+    raise KeyError("installed config has no profiles")
 REPS = {("ladder", "ac"): (1, 2), ("ladder", "battery"): (1,),
         ("profiles", "ac"): (1, 2), ("profiles", "battery"): (1,),
         ("validate", "ac"): (1,), ("validate", "battery"): (1,)}
@@ -69,7 +145,8 @@ class RowLog:
 
 def build_trials(phases: list[str], powers: list[str],
                  duties: dict[str, tuple[int, ...]] | None = None,
-                 max_rep: int | None = None) -> list[dict]:
+                 max_rep: int | None = None,
+                 profile_names: tuple[str, ...] = PROFILES_PHASE) -> list[dict]:
     """Trial matrix, AC block first so plug/unplug happens once."""
     duties = duties or {}
     trials: list[dict] = []
@@ -86,10 +163,10 @@ def build_trials(phases: list[str], powers: list[str],
                             trials.append(dict(
                                 trial_id=f"ladder-{power}-{load}-d{duty}-r{rep}",
                                 phase="ladder", power=power,
-                                profile=LADDER_PROFILE, load=load,
+                                profile=ladder_profile_name(duty), load=load,
                                 duty_cmd=duty, rep=rep))
             elif phase == "profiles":
-                for profile in PROFILES_PHASE:
+                for profile in (profile_names or PROFILES_PHASE):
                     for load in PROFILE_LOADS:
                         for rep in REPS[("profiles", power)]:
                             if max_rep is not None and rep > max_rep:
@@ -131,8 +208,7 @@ class Bench:
     def __init__(self, args) -> None:
         self.args = args
         os.makedirs(RESULTS, exist_ok=True)
-        self.out_path = (args.out if os.path.isabs(args.out)
-                         else os.path.join(HERE, args.out))
+        self.out_path = os.path.abspath(args.out)
         os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
         self.probe = ECProbe()
         self.burners = Burners()
@@ -278,13 +354,15 @@ class Bench:
 def ensure_tuned_profiles(curves: dict) -> None:
     """Idempotently write Tuned AC / Tuned Battery into the installed config.
 
-    GPU tables = Silent's verbatim (no GPU burner was characterized); Tuned
-    Battery charges to a custom 80 % limit; Tuned AC keeps Config 1's battery
+    Defaults (charge policy etc.) and the GPU table (no GPU burner was
+    characterized) come from the first real auto-mode profile; Tuned Battery
+    charges to a custom 80 % limit; Tuned AC keeps the donor's battery
     policy.
     """
     cfg = appctl.load_cfg()
-    defaults = copy.deepcopy(cfg["profiles"]["Config 1"])
-    silent_gpu = cfg["profiles"]["Silent"]["gpu_fan_table"]
+    _, defaults = phase_donor_profile(cfg)
+    defaults = copy.deepcopy(defaults)
+    silent_gpu = defaults["gpu_fan_table"]
     appctl.ensure_profile(cfg, TUNED_AC, defaults)
     appctl.edit_profile(cfg, TUNED_AC, fan_mode="auto",
                         cpu_fan_table=curves["ac"]["curve"],
@@ -301,15 +379,15 @@ def ensure_tuned_profiles(curves: dict) -> None:
 def run_selftest(bench: Bench) -> int:
     cfg = appctl.load_cfg()
     original_active = cfg.get("active_profile_name", "Config 1")
-    defaults = copy.deepcopy(cfg["profiles"]["Config 1"])
-    appctl.ensure_profile(cfg, LADDER_PROFILE, defaults)
-    appctl.edit_profile(cfg, LADDER_PROFILE, fan_mode="custom",
+    _, defaults = phase_donor_profile(cfg)
+    appctl.ensure_profile(cfg, ladder_profile_name(40), defaults)
+    appctl.edit_profile(cfg, ladder_profile_name(40), fan_mode="custom",
                         custom_fan_speed=40)
     appctl.save_cfg_atomic(cfg)
     # apply_profile asserts last_mode == 'custom' and heartbeat age < 3 s.
-    appctl.apply_profile(LADDER_PROFILE, "custom")
+    appctl.apply_profile(ladder_profile_name(40), "custom")
     trial = dict(trial_id="selftest-dual-r0", phase="selftest", power="ac",
-                 profile=LADDER_PROFILE, load="dual", duty_cmd=40, rep=0)
+                 profile=ladder_profile_name(40), load="dual", duty_cmd=40, rep=0)
     selftest_path = os.path.join(RESULTS, "selftest.jsonl")
     if os.path.exists(selftest_path):
         os.remove(selftest_path)  # a prior failed run must not pad the count
@@ -402,26 +480,44 @@ def main(argv=None) -> int:
 
     duties = ({"ladder": tuple(int(d) for d in args.duties.split(","))}
               if args.duties else None)
+    cfg = appctl.load_cfg()
+    profile_names = resolve_profile_names(cfg)
+    if not profile_names:
+        print("[bench] installed config has no profiles to characterize",
+              file=sys.stderr)
+        return 5
     phases = (["ladder", "profiles", "validate"] if args.phase == "all"
               else [args.phase])
     powers = ["ac", "battery"] if args.power == "both" else [args.power]
-    trials = build_trials(phases, powers, duties, args.reps)
+    if "ladder" in phases:
+        per_power = {p: ((duties or {}).get("ladder")
+                         or (AC_DUTIES if p == "ac" else BATTERY_DUTIES))
+                     for p in powers}
+        ensure_ladder_profiles(cfg, per_power)
+    trials = build_trials(phases, powers, duties, args.reps,
+                          profile_names=profile_names)
     if args.loads:
         wanted = {s.strip() for s in args.loads.split(",")}
         trials = [t for t in trials if t.get("load") in wanted]
 
-    done = prepare_resume(bench.out_path) if args.resume else set()
-    trials = [t for t in trials if t["trial_id"] not in done]
+    if args.resume:
+        done = prepare_resume(bench.out_path)
+        trials = [t for t in trials if t["trial_id"] not in done]
+        write_meta = not any(r.get("meta") for r in
+                             (analyze.load_rows(bench.out_path)
+                              if os.path.exists(bench.out_path) else []))
+    else:
+        done = set()
+        write_meta = True
+        if os.path.exists(bench.out_path):
+            os.remove(bench.out_path)  # a fresh run owns the file
+
     print(f"[bench] {len(trials)} trials to run "
           f"({'full' if args.full else 'quick'}, "
           f"{'/'.join(phases)}, {'/'.join(powers)})", flush=True)
 
-    cfg = appctl.load_cfg()
     original_active = cfg.get("active_profile_name", "Config 1")
-    has_meta = any(r.get("meta") for r in
-                   (analyze.load_rows(bench.out_path)
-                    if os.path.exists(bench.out_path) else []))
-    if not has_meta:
+    if write_meta:
         bench.log.append({"meta": True, "ts": time.time(),
                           "window": bench.window_s, "cap": args.cap,
                           "full": args.full,
@@ -486,6 +582,10 @@ def main(argv=None) -> int:
                          bench.window_s, args.cap,
                          os.path.join(RESULTS, "report.md"), full_capacity)
     appctl.restore_active(original_active)
+    try:
+        remove_bench_owned_profiles()
+    except Exception as exc:
+        print(f"[bench] ladder profile cleanup failed: {exc}", file=sys.stderr)
     print("DONE")
     return 0
 

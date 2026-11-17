@@ -103,18 +103,34 @@ if ((Test-Path $legacyStatePath) -and -not (Test-Path $statePath)) {
     Write-Log "state-migrated"
 }
 
+function Get-Sha256([string]$Path) {
+    # .NET directly: Get-FileHash lives in the Microsoft.PowerShell.Utility
+    # module, which is not autoloadable when powershell.exe 5.1 inherits a
+    # pwsh 7 PSModulePath (happens when the bench wrapper spawns the deploy).
+    $sha = New-Object System.Security.Cryptography.SHA256CryptoServiceProvider
+    try {
+        return ([System.BitConverter]::ToString(
+            $sha.ComputeHash([System.IO.File]::ReadAllBytes($Path))
+        )).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 $configBefore = ""
 if (Test-Path $configPath) {
-    $configBefore = (Get-FileHash -Algorithm SHA256 -Path $configPath).Hash
+    $configBefore = Get-Sha256 $configPath
 }
 Write-Log "copy-dist"
-& robocopy $dist $install /E /XF control_config.json last_mode.state /NFL /NDL /NJH /NJS /NP
+# /R:2 /W:5: the AV-scan lock on the fresh exe stalls default retry
+# semantics (~30 s per miss); two quick retries are enough (ROADMAP known thread).
+& robocopy $dist $install /E /R:2 /W:5 /XF control_config.json last_mode.state /NFL /NDL /NJH /NJS /NP
 if ($LASTEXITCODE -ge 8) {
     Write-Log "robocopy-failed=$LASTEXITCODE"
     exit 6
 }
 if ($configBefore -ne "") {
-    $configAfter = (Get-FileHash -Algorithm SHA256 -Path $configPath).Hash
+    $configAfter = Get-Sha256 $configPath
     if ($configBefore -ne $configAfter) {
         Write-Log "config-changed"
         exit 7
@@ -170,6 +186,24 @@ sys.exit(0 if _instance_running() else 1)
 }
 Start-Sleep -Seconds 8
 
+# Probe race fix (2026-11-16 18:33 + 20:40 deploys): last_mode.state is only
+# rewritten once the new instance APPLIES its mode; the heartbeat appears at
+# init. Probing before the mode write reads the killed instance's leftover
+# and misclassifies the run (18:49 PASSed by luck, 20:40 FAILed on the same
+# timing). Gate on a fresh heartbeat AND a last_mode write newer than the
+# deploy start.
+$heart = Join-Path $install "heartbeat.state"
+$startStamp = [DateTime]::Now
+$waited = 0
+while ($waited -lt 75) {
+    Start-Sleep -Seconds 3
+    $waited += 3
+    $hbFresh = (Test-Path $heart) -and ((([DateTime]::Now) - ([IO.File]::GetLastWriteTime($heart))).TotalSeconds -lt 10)
+    $modeFresh = (Test-Path $statePath) -and ([IO.File]::GetLastWriteTime($statePath) -ge $startStamp)
+    if ($hbFresh -and $modeFresh) { break }
+}
+if ($waited -ge 75) { Write-Log "mode-wait=stale" } else { Write-Log "mode-wait=$waited" }
+
 Write-Log "probe"
 & $python -c @"
 import os
@@ -204,6 +238,26 @@ for name in names:
         values[name] = call(getter, name)
     except Exception as exc:
         values[name] = 'ERR:%s' % exc
+
+def decode_rpm_word(word):
+    # Same rule as the app and tools decoder: raw word 0..8000 wins, else
+    # the byte-swapped word; <=50 means stopped; implausible -> -1.
+    # (No double quotes in this file: they are mangled by PowerShell's
+    # native-argument quoting when the probe is passed to python -c.)
+    try:
+        raw = int(word) & 0xFFFF
+    except (TypeError, ValueError):
+        return -1
+    swapped = ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)
+    for cand in (raw, swapped):
+        if 0 <= cand <= 8000:
+            return 0 if cand <= 50 else cand
+    return -1
+
+for rpm_name in ('getRpm1', 'getRpm2'):
+    if rpm_name in values:
+        values[rpm_name] = decode_rpm_word(values[rpm_name])
+
 for name in names:
     print('%s=%s' % (name, values[name]))
 

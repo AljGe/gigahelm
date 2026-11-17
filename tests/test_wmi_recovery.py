@@ -10,6 +10,7 @@ user touches fan mode. Regression test for the stuck-after-resume bug.
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ _APP = QApplication.instance() or QApplication([])
 from core.path_manager import PathManager  # noqa: E402
 from core.state import AppState  # noqa: E402
 from core.app_services import AppServices  # noqa: E402
+import core.wmi_interface as wmi_module  # noqa: E402
 from config.settings import WMIInternalSignal, FAN_MODE_AUTO  # noqa: E402
 
 CURVE = [[50, 0], [60, 15], [70, 25], [80, 40], [85, 60], [90, 80], [95, 100]]
@@ -70,6 +72,13 @@ class WmiRecoveryTests(unittest.TestCase):
         self.state = AppState(path_manager=PathManager(
             base_dir=self.tmp, executable_path="python.exe", main_script_path=""))
         self.svc = AppServices(state=self.state)
+        # Hermetic at elevation: a real worker start succeeds when EC WMI is
+        # available, latching _cycle_in_flight without an event loop to drain
+        # it - which would skip every fake-driven cycle below.
+        patcher = patch.object(wmi_module.WMIInterface, "start",
+                               return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.state.load_profiles_from_config(
             {"Silent": {"fan_mode": FAN_MODE_AUTO, "cpu_fan_table": CURVE}},
             ["Silent"])

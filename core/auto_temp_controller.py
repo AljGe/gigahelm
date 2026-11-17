@@ -52,10 +52,6 @@ class AutoTemperatureController(QObject):
         self._gpu_interpolator = self._create_interpolator(self._gpu_curve_data, "GPU")
         self.reset_state()
 
-    def update_auto_settings(self, profile: ProfileState):
-        """保留空实现，避免 appearance_changed 连接断裂。斜坡不再读取步长设置。"""
-        return
-
     def reset_state(self):
         """重置理论目标缓存。风扇斜坡标志由 AppServices 在调用方重置。"""
         self._last_theoretical_target = INIT_APPLIED_PERCENTAGE

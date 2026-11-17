@@ -48,6 +48,9 @@ from config.settings import (
     WMI_REQUEST_TIMEOUT_S, WMI_ASYNC_RESULT_TIMEOUT_S,
     TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
     NVML_FF_IDLE_W, NVML_FF_RESUME_TEMP_C, NVML_IDLE_SKIP_W,
+    NVML_FF_EMA_ALPHA, NVML_FF_MAX_BOOST_C,
+    NVML_FF_RESUME_SOFT_CYCLES, NVML_FF_RESUME_SOFT_CAP_C,
+    GPU_SLEEP_PROBE_EVERY_N_SWEEPS,
     WMIInternalSignal
 )
 
@@ -92,11 +95,17 @@ class WMIWorker(threading.Thread):
         # (EC GPU temp) or a sleep/wake cycle re-arms it.
         self._nvml_last_power_w: Optional[float] = None
         self._nvml_idle_paused: bool = False
+        # EMA over raw NVML power (see _poll_nvml_if_allowed) and the
+        # post-resume soft-start countdown for the feed-forward offset.
+        self._nvml_power_ema: Optional[float] = None
+        self._ff_ramp_cycles_left: int = 0
         # GPU-asleep probe latch: while the dGPU is off, the EC reports 0/0
-        # for both GPU sensors, so re-probing them every sweep buys nothing.
-        # A fresh worker (rebuild/resume) starts unlatched.
+        # for both GPU sensors; re-probe every GPU_SLEEP_PROBE_EVERY_N_SWEEPS
+        # sweeps so a real wake is seen within a few seconds (EC register
+        # reads never touch NVML, so D3cold is unaffected). A fresh worker
+        # (rebuild/resume) starts unlatched.
         self._gpu_asleep_latched: bool = False
-        self._gpu_sleep_probes_left: int = 0
+        self._gpu_probe_skip_left: int = 0
         self.initialization_error: Optional[Exception] = None
         self.initialization_complete = threading.Event()
         self._stop_event = threading.Event()
@@ -388,19 +397,24 @@ class WMIWorker(threading.Thread):
 
     def _get_temperatures(self) -> Dict[str, Any]:
         cpu_temp = self._validate_temp(self._execute_wmi_method(self._wmi_get_obj, GET_CPU_TEMP))
-        if self._gpu_asleep_latched and self._gpu_sleep_probes_left > 0:
-            self._gpu_sleep_probes_left -= 1
-            return {'cpu_temp': cpu_temp, 'gpu_temp': TEMP_READ_ERROR_VALUE, 'gpu_asleep': True}
+        if self._gpu_asleep_latched:
+            # Latched asleep: skip the GPU getters, but re-probe every Nth
+            # sweep (GPU_SLEEP_PROBE_EVERY_N_SWEEPS) to catch a real wake
+            # within seconds instead of parking ~12-20 s blind.
+            self._gpu_probe_skip_left -= 1
+            if self._gpu_probe_skip_left > 0:
+                return {'cpu_temp': cpu_temp, 'gpu_temp': TEMP_READ_ERROR_VALUE, 'gpu_asleep': True}
+            self._gpu_probe_skip_left = GPU_SLEEP_PROBE_EVERY_N_SWEEPS
+            # fall through: probe the GPU getters this sweep
         raw_gpu = [self._execute_wmi_method(self._wmi_get_obj, m) for m in [GET_GPU_TEMP1, GET_GPU_TEMP2] if hasattr(self._wmi_get_obj, m)]
         temps = [self._validate_temp(v) for v in raw_gpu]
         gpu_temp = max([t for t in temps if t != TEMP_READ_ERROR_VALUE], default=TEMP_READ_ERROR_VALUE)
         # EC reports 0 for both GPU sensors exactly when the dGPU is powered down (Advanced Optimus);
         # that is a sleep state, not a sensor failure. Unparseable raw values keep gpu_asleep False.
         gpu_asleep = gpu_temp == TEMP_READ_ERROR_VALUE and bool(raw_gpu) and all(self._to_int(v) == 0 for v in raw_gpu)
-        # Latch: while asleep, skip the two GPU getters for the next 19 sweeps
-        # (~12 s visible / ~20 s hidden wake-detection latency).
+        # Latch: while asleep, skip the two GPU getters between probes.
         self._gpu_asleep_latched = gpu_asleep
-        self._gpu_sleep_probes_left = 19 if gpu_asleep else 0
+        self._gpu_probe_skip_left = GPU_SLEEP_PROBE_EVERY_N_SWEEPS if gpu_asleep else 0
         return {'cpu_temp': cpu_temp, 'gpu_temp': gpu_temp, 'gpu_asleep': gpu_asleep}
 
     def _poll_nvml_if_allowed(self, data: Dict[str, Any]) -> None:
@@ -410,29 +424,59 @@ class WMIWorker(threading.Thread):
         idle dGPU at P0 and keeps it out of D3cold. Three gates prevent
         that: the profile flag (_nvml_poll_enabled), the EC sleep heuristic,
         and the idle skip (stop reading once power sits at/below the
-        feed-forward floor; resume on real load or a sleep/wake cycle)."""
+        feed-forward floor; resume on real load or a sleep/wake cycle).
+
+        The attached power is an EMA over raw readings (NVML draw flaps
+        tick-to-tick at moderate load; an unfiltered offset pumps the fans
+        through the steep curve segments). The idle-skip decision uses the
+        same smoothed value, so a single low sample can't pause a loaded GPU.
+        """
         if not self._nvml_ok or not self._nvml_poll_enabled:
             return
         if data.get('gpu_asleep', False):
             # Powered down: never touch NVML; re-arm so the first reading
             # after wake is taken fresh.
             self._nvml_last_power_w = None
+            self._nvml_power_ema = None
             self._nvml_idle_paused = False
+            self._ff_ramp_cycles_left = 0
             return
         gpu_temp = data.get('gpu_temp', TEMP_READ_ERROR_VALUE)
         if self._nvml_idle_paused:
             if gpu_temp == TEMP_READ_ERROR_VALUE or gpu_temp < NVML_FF_RESUME_TEMP_C:
                 return  # still idle and cool: keep the GPU alone
             self._nvml_idle_paused = False  # genuine load: resume reading
+            # Ease the feed-forward offset back in: the full 10 degC boost in
+            # one write would step the fans off the 25 % floor duty.
+            self._ff_ramp_cycles_left = NVML_FF_RESUME_SOFT_CYCLES
         power_w, gpu_util = self._read_nvml_gpu()
         self._nvml_last_power_w = power_w
+        if power_w is None:
+            # Unknown reading: never boost on it, and re-seed the EMA on the
+            # next real reading instead of easing in from stale state.
+            self._nvml_power_ema = None
+        else:
+            ema = self._nvml_power_ema
+            self._nvml_power_ema = (power_w if ema is None
+                                    else ema + NVML_FF_EMA_ALPHA * (power_w - ema))
+            if self._ff_ramp_cycles_left > 0:
+                self._ff_ramp_cycles_left -= 1
         # 31-34 W pinned idle is above the 30 W offset floor, so the skip
         # threshold is its own constant (see NVML_IDLE_SKIP_W).
-        self._nvml_idle_paused = power_w is not None and power_w <= NVML_IDLE_SKIP_W
-        if power_w is not None:
-            data['gpu_power_w'] = power_w
+        self._nvml_idle_paused = (self._nvml_power_ema is not None
+                                  and self._nvml_power_ema <= NVML_IDLE_SKIP_W)
+        if self._nvml_power_ema is not None:
+            data['gpu_power_w'] = self._nvml_power_ema
         if gpu_util is not None:
             data['gpu_util'] = gpu_util
+
+    def ff_max_boost_cap(self) -> float:
+        """Offset cap for this cycle: the soft-start cap while the resume
+        ramp runs, else the normal NVML_FF_MAX_BOOST_C. Read from the GUI
+        thread by the control cycle (plain int/float read, GIL-atomic)."""
+        if self._ff_ramp_cycles_left > 0:
+            return NVML_FF_RESUME_SOFT_CAP_C
+        return NVML_FF_MAX_BOOST_C
 
     def _get_core_sensors(self) -> Dict[str, Any]:
         data = self._get_temperatures()
@@ -545,6 +589,18 @@ class WMIInterface(QObject):
         worker = self._worker_thread
         if worker is not None:
             worker._nvml_util_enabled = bool(enabled)
+
+    def ff_max_boost_cap(self) -> float:
+        """Current feed-forward offset cap from the live worker (soft-start
+        cap while a post-resume ramp runs, else the normal maximum). Reads a
+        plain int on the worker — GIL-atomic, safe from the GUI thread.
+        No worker (stopped/dead): normal cap, so a control cycle during a
+        worker gap behaves like a steady-state one."""
+        with self._lock:
+            worker = self._worker_thread
+        if worker is None:
+            return NVML_FF_MAX_BOOST_C
+        return worker.ff_max_boost_cap()
 
     def stop(self, join_timeout: float = WMI_REQUEST_TIMEOUT_S):
         with self._lock:
