@@ -97,6 +97,16 @@ class WmiRecoveryTests(unittest.TestCase):
         self.assertGreaterEqual(self.svc.wmi_interface.sensor_reads, 1)
         self.assertTrue(self.svc.wmi_interface.applies)
 
+    def test_dead_worker_timer_restarts_loop(self):
+        fake = FakeWMI()
+        fake.running = False
+        self.svc.wmi_interface = fake
+        self.svc.controller_timer.stop()
+        self.svc._last_wmi_recovery_attempt = 0.0
+        self.svc._recover_if_dead()
+        self.assertTrue(self.svc.controller_timer.isActive())
+        self.assertTrue(fake.applies)
+
 
 if __name__ == "__main__":
     unittest.main()
