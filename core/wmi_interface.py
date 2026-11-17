@@ -248,8 +248,9 @@ class WMIWorker(threading.Thread):
                 self._core_sensor_ts = time.monotonic()
             return result
         if method_or_signal is WMIInternalSignal.APPLY_FAN_CONTROL:
-            return self._apply_fan_control(
-                float(params.get("duty_raw", 0.0)),
+            return self._apply_per_fan_control(
+                float(params.get("cpu_duty_raw", 0.0)),
+                float(params.get("gpu_duty_raw", 0.0)),
                 bool(params.get("reassert_flags", True)),
             )
         if method_or_signal is WMIInternalSignal.APPLY_BIOS_CONTROL:
@@ -382,15 +383,15 @@ class WMIWorker(threading.Thread):
         except (ValueError, TypeError):
             return None
 
-    def _apply_fan_control(self, duty_raw: float, reassert_flags: bool) -> Dict[str, Any]:
-        """Worker-side fan write: reassert software control flags, then write the duty to both fans."""
+    def _apply_per_fan_control(self, cpu_duty_raw: float, gpu_duty_raw: float, reassert_flags: bool) -> Dict[str, Any]:
+        """Worker-side fan write: reassert software control flags, then write each channel's own duty."""
         if reassert_flags:
             self._execute_wmi_method(self._wmi_set_obj, SET_CUSTOM_FAN_STATUS, Data=1.0)
             self._execute_wmi_method(self._wmi_set_obj, SET_SUPER_QUIET, Data=0.0)
             self._execute_wmi_method(self._wmi_set_obj, SET_AUTO_FAN_STATUS, Data=0.0)
             self._execute_wmi_method(self._wmi_set_obj, SET_STEP_FAN_STATUS, Data=0.0)
-        self._execute_wmi_method(self._wmi_set_obj, SET_CUSTOM_FAN_SPEED, Data=float(duty_raw))
-        self._execute_wmi_method(self._wmi_set_obj, SET_GPU_FAN_DUTY, Data=float(duty_raw))
+        self._execute_wmi_method(self._wmi_set_obj, SET_CUSTOM_FAN_SPEED, Data=float(cpu_duty_raw))
+        self._execute_wmi_method(self._wmi_set_obj, SET_GPU_FAN_DUTY, Data=float(gpu_duty_raw))
         return {"applied": True}
 
     def _apply_bios_control(self) -> Dict[str, Any]:
@@ -490,8 +491,15 @@ class WMIWorker(threading.Thread):
 
     def _get_core_sensors(self) -> Dict[str, Any]:
         data = self._get_temperatures()
-        data['fan1_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM1))
-        data['fan2_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM2))
+        # Bench-proven pairing (split A/B, 2026-11-17): SET_GPU_FAN_DUTY
+        # drives the fan EC rpm1 reports and SET_CUSTOM_FAN_SPEED drives rpm2
+        # (fan1 tracked the GPU channel across split idle/dual, hit 4597 rpm
+        # when both channels wrote 81 %, and read 0 exactly when the GPU
+        # channel read 0). Mirror the readbacks so fan1_rpm keeps its
+        # documented meaning - "the fan the CPU duty commands" - for the
+        # dashboard cards, stall detection, and fan labels.
+        data['fan1_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM2))
+        data['fan2_rpm'] = self._validate_rpm(self._execute_wmi_method(self._wmi_get_obj, GET_RPM1))
         self._poll_nvml_if_allowed(data)
         return data
 
