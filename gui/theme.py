@@ -118,6 +118,7 @@ QLabel#cardTitle { font-size: 12pt; font-weight: 600; color: $text; }
 QLabel#cardDesc { font-size: 9pt; color: $text_muted; }
 QLabel#liveValue { font-size: 18pt; font-weight: 600; color: $text; }
 QLabel#liveLine { font-size: 9pt; color: $text_muted; }
+QLabel#legendLabel { font-size: 8pt; color: $text_muted; }
 
 QFrame#segmented { background: $surface_alt; border: 1px solid $border; border-radius: 9px; }
 QFrame#segmented QPushButton { background: transparent; border: none; border-radius: 7px;

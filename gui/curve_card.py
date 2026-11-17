@@ -13,6 +13,7 @@ from .qt import (
     QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMenu,
     QInputDialog, QLineEdit, QMessageBox, QDialog, QSizePolicy,
     QContextMenuEvent, QPoint, QShortcut, QKeySequence, Qt, Signal, Slot,
+    QPainter, QColor, QPen, QPointF,
 )
 from .flow_layout import FlowLayout
 from .segmented_control import SegmentedControl
@@ -42,6 +43,36 @@ class _ProfileChip(QPushButton):
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         self._on_context_menu(self, event.globalPos())
         event.accept()
+
+
+class _LegendSwatch(QWidget):
+    """Tiny fixed-size swatch for the curve legend: line (CPU/GPU), hollow
+    ring (EMA operating point) or dashed line (safety floor). Reads the
+    palette at paint time, so a theme change only needs an update()."""
+
+    def __init__(self, kind: str, theme: ThemeManager, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._kind = kind
+        self._theme = theme
+        self.setFixedSize(18, 10)
+
+    def paintEvent(self, event) -> None:
+        palette = self._theme.palette()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        y = self.height() / 2
+        if self._kind in ("cpu", "gpu"):
+            color = palette.curve_cpu if self._kind == "cpu" else palette.curve_gpu
+            painter.setPen(QPen(QColor(color), 2))
+            painter.drawLine(QPointF(0, y), QPointF(self.width(), y))
+        elif self._kind == "ema":
+            painter.setPen(QPen(QColor(palette.text), 1.6))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(self.width() / 2, y), 3.2, 3.2)
+        else:  # safety floor
+            painter.setPen(QPen(QColor(palette.danger), 1.6, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(0, y), QPointF(self.width(), y))
+        painter.end()
 
 
 class CurveCard(QFrame):
@@ -123,6 +154,29 @@ class CurveCard(QFrame):
         self.add_profile_button.setObjectName("addProfileButton")
         self.add_profile_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         tooltip_manager.register(self.add_profile_button, "add_profile_tooltip")
+
+        # Legend: what each colour/shape on the canvas means.
+        self._legend_keys = ("legend_cpu_curve", "legend_gpu_curve",
+                             "legend_ema_point", "legend_safety_floor")
+        self._legend_kinds = ("cpu", "gpu", "ema", "floor")
+        self._legend_labels: List[QLabel] = []
+        self._legend_swatches: List[_LegendSwatch] = []
+        legend_row = QHBoxLayout()
+        legend_row.setContentsMargins(0, 0, 0, 0)
+        legend_row.setSpacing(14)
+        for kind, key in zip(self._legend_kinds, self._legend_keys):
+            entry = QHBoxLayout()
+            entry.setSpacing(4)
+            swatch = _LegendSwatch(kind, self.theme, self)
+            label = QLabel(tr(key), self)
+            label.setObjectName("legendLabel")
+            entry.addWidget(swatch)
+            entry.addWidget(label)
+            legend_row.addLayout(entry)
+            self._legend_labels.append(label)
+            self._legend_swatches.append(swatch)
+        legend_row.addStretch(1)
+        layout.addLayout(legend_row)
 
         self.canvas = LightweightCurveCanvas(self.state, self.profile_manager, self.theme, self)
         layout.addWidget(self.canvas, 1)
@@ -307,7 +361,11 @@ class CurveCard(QFrame):
         self.curve_switch.set_segment_text("cpu", tr("cpu_curve_button"))
         self.curve_switch.set_segment_text("gpu", tr("gpu_curve_button"))
         self.reset_curve_button.setText(tr("reset_curve_button"))
+        for label, key in zip(self._legend_labels, self._legend_keys):
+            label.setText(tr(key))
         self.canvas.retranslate_ui()
 
     def apply_theme(self) -> None:
+        for swatch in self._legend_swatches:
+            swatch.update()
         self.canvas.on_theme_changed()

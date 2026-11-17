@@ -697,6 +697,13 @@ class AppServices(QObject):
             gpu_ctrl = self._smooth_control_temp(self._gpu_ctrl_temp, gpu_temp)
             self._cpu_ctrl_temp = cpu_ctrl
             self._gpu_ctrl_temp = gpu_ctrl
+            # Mirror the smoothed control temps for the curve canvas: raw
+            # temps drive the dotted crosshairs, the EMA ring shows the
+            # operating point the controller actually acts on. Same
+            # UI-visibility gate as the raw-temps block above.
+            if self._is_ui_visible:
+                self.state.set_cpu_ctrl_temp(cpu_ctrl)
+                self.state.set_gpu_ctrl_temp(gpu_ctrl)
 
             if mode == FAN_MODE_CUSTOM:
                 base_target = 0
