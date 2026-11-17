@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ from core.gpu_power import feedforward_offset  # noqa: E402
 from core.path_manager import PathManager  # noqa: E402
 from core.state import AppState  # noqa: E402
 from core.app_services import AppServices  # noqa: E402
+import core.wmi_interface as wmi_module  # noqa: E402
 from config.settings import (  # noqa: E402
     NVML_FF_IDLE_W, NVML_FF_K_C_PER_W, NVML_FF_MAX_BOOST_C,
 )
@@ -67,6 +69,9 @@ class FakeWMI:
     def set_nvml_poll_enabled(self, enabled: bool) -> None:
         pass
 
+    def ff_max_boost_cap(self) -> float:
+        return NVML_FF_MAX_BOOST_C
+
     def submit_async(self, signal, params=None, on_done=None):
         if signal == "_get_core_sensors":
             on_done({"cpu_temp": 45.0, "gpu_temp": 45.0, "gpu_asleep": False,
@@ -87,6 +92,15 @@ class FakeWMI:
 
 class FeedforwardCycleTests(unittest.TestCase):
     def _make_service(self, profile_config):
+        # Hermetic at elevation: without this, profile activation drives one
+        # live cycle through the REAL WMI worker (it starts successfully when
+        # EC WMI is available), which latches _cycle_in_flight forever - the
+        # result drain needs a Qt event loop - and every later fake-driven
+        # cycle is silently skipped.
+        patcher = patch.object(wmi_module.WMIInterface, "start",
+                               return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         tmp = tempfile.mkdtemp(prefix="gigahelm-ff-")
         state = AppState(path_manager=PathManager(
             base_dir=tmp, executable_path="python.exe", main_script_path=""))

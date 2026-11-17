@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +18,10 @@ _APP = QApplication.instance() or QApplication([])
 from core.path_manager import PathManager  # noqa: E402
 from core.state import AppState  # noqa: E402
 from core.app_services import AppServices  # noqa: E402
-from config.settings import HOT_ALERT_SUSTAINED_CYCLES, HOT_ALERT_TEMP_C  # noqa: E402
+import core.wmi_interface as wmi_module  # noqa: E402
+from config.settings import (
+    HOT_ALERT_SUSTAINED_CYCLES, HOT_ALERT_TEMP_C, NVML_FF_MAX_BOOST_C,
+)  # noqa: E402
 
 CURVE = [[40, 0], [50, 20], [60, 40], [70, 60], [80, 80]]
 
@@ -41,6 +45,9 @@ class FakeWMI:
     def set_nvml_poll_enabled(self, enabled: bool) -> None:
         pass
 
+    def ff_max_boost_cap(self) -> float:
+        return NVML_FF_MAX_BOOST_C
+
     def submit_async(self, signal, params=None, on_done=None):
         if signal == "_get_core_sensors":
             on_done(dict(self.temps), None)
@@ -55,6 +62,11 @@ class FakeWMI:
 
 class HotAlertTests(unittest.TestCase):
     def setUp(self):
+        # Hermetic at elevation (see test_gpu_feedforward).
+        patcher = patch.object(wmi_module.WMIInterface, "start",
+                               return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.mkdtemp(prefix="gigahelm-hot-")
         self.state = AppState(path_manager=PathManager(
             base_dir=self.tmp, executable_path="python.exe", main_script_path=""))

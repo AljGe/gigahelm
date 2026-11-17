@@ -16,7 +16,7 @@ from .auto_temp_controller import AutoTemperatureController
 from .state import AppState, ProfileState
 from .fan_duty import percent_to_raw
 from .fan_ramp import next_fan_percent, next_target
-from .fan_target import select_fan_target
+from .fan_target import guard_floor, select_fan_target
 from .thermal_guard import ThermalGuardWatchdog
 from .gpu_power import feedforward_offset
 from tools.localization import tr
@@ -27,8 +27,8 @@ from config.settings import (
     CHARGE_WATCH_INTERVAL_MS,
     INIT_APPLIED_PERCENTAGE, TEMP_READ_ERROR_VALUE, RPM_READ_ERROR_VALUE,
     SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_STATUS, SET_CHARGE_STOP,
-    DEFAULT_TARGET_HYSTERESIS_PERCENT, FAN_STALL_CYCLES,
-    NVML_FF_IDLE_W, NVML_FF_K_C_PER_W, NVML_FF_MAX_BOOST_C,
+    DEFAULT_TARGET_HYSTERESIS_PERCENT, FAN_STALL_CYCLES, TEMP_SMOOTH_ALPHA,
+    NVML_FF_IDLE_W, NVML_FF_K_C_PER_W,
     HOT_ALERT_TEMP_C, HOT_ALERT_RESET_C, HOT_ALERT_SUSTAINED_CYCLES,
     LAST_MODE_FILENAME, HEARTBEAT_FILENAME, WMIInternalSignal
 )
@@ -77,8 +77,6 @@ class AppServices(QObject):
 
         self.controller_timer = QTimer(self)
         self.controller_timer.timeout.connect(self._perform_control_cycle)
-        self._kick_armed = False
-        self._spinning_down = False
         self._last_wmi_recovery_attempt: float = 0.0
         self._cycle_in_flight = False
         self._cycles_since_flag_reassert = 0
@@ -86,6 +84,14 @@ class AppServices(QObject):
         self._mode_generation = 0
         self._cycle_generation = 0
         self._auto_target: Optional[int] = None
+        # Consecutive zero raw targets (fan_ramp.next_target zero-release
+        # debounce); EMA-smoothed control temps; engaged thermal-guard floors
+        # per sensor (fan_target.guard_floor engage/release hysteresis).
+        self._zero_streak = 0
+        self._cpu_ctrl_temp: Optional[float] = None
+        self._gpu_ctrl_temp: Optional[float] = None
+        self._cpu_guard_floor = 0
+        self._gpu_guard_floor = 0
         self._fan1_stall_cycles = 0
         self._fan2_stall_cycles = 0
         self._fan_stall_reported = False
@@ -178,12 +184,9 @@ class AppServices(QObject):
                 self._current_profile.get_gpu_fan_table()
             )
             self._auto_target = None
-            self._arm_software_ramp()
 
     def _update_controller_settings(self):
         if self._current_profile:
-            self.auto_temp_controller.update_auto_settings(self._current_profile)
-
             controller_interval = self._current_profile.get_value('controller_update_interval_ms')
             if self.controller_timer.interval() != controller_interval:
                 self.controller_timer.setInterval(controller_interval)
@@ -247,7 +250,6 @@ class AppServices(QObject):
                     self.state.set_is_fan_control_panel_enabled(True)
                     if not self.controller_timer.isActive():
                         self.controller_timer.start()
-                    self._arm_software_ramp()
                     self._perform_control_cycle()
                 else:
                     self.state.set_applied_fan_mode(FAN_MODE_UNKNOWN)
@@ -263,10 +265,6 @@ class AppServices(QObject):
                 on_done(True)
 
         self.wmi_interface.submit_async(WMIInternalSignal.APPLY_BIOS_CONTROL, on_done=_finished)
-
-    def _arm_software_ramp(self):
-        self._kick_armed = True
-        self._spinning_down = False
 
     def mark_emergency_latched(self):
         self._emergency_latched = True
@@ -300,14 +298,15 @@ class AppServices(QObject):
         if now - self._last_wmi_recovery_attempt < 30.0:
             return
         self._last_wmi_recovery_attempt = now
+        self._log_control_event("wmi recovery attempt")
         try:
             self.wmi_interface.stop(join_timeout=1.0)
         except Exception:
             pass
         if self.wmi_interface.start(init_timeout=3.0):
+            self._log_control_event("wmi recovery ok")
             self.state.set_controller_status_message("")
             self._auto_target = None
-            self._arm_software_ramp()
             profile = self._current_profile
             if profile and self.state.get_applied_fan_mode() in (FAN_MODE_AUTO, FAN_MODE_CUSTOM):
                 # recover_after_resume() stops the timer and returns early when
@@ -319,6 +318,7 @@ class AppServices(QObject):
                     self.controller_timer.start()
                 self._perform_control_cycle()
         else:
+            self._log_control_event("wmi recovery failed")
             self.state.set_controller_status_message(tr("wmi_error"))
 
     def recover_after_resume(self):
@@ -334,7 +334,6 @@ class AppServices(QObject):
         if not profile:
             return
         self._auto_target = None
-        self._arm_software_ramp()
         mode = profile.get_fan_mode()
         self.set_fan_mode(mode)
         if mode == FAN_MODE_AUTO:
@@ -372,6 +371,28 @@ class AppServices(QObject):
         except OSError as e:
             print(f"Warning: could not write {LAST_MODE_FILENAME}: {e}", file=sys.stderr)
 
+    #: Rotate control_loop.log to .old once it exceeds this size.
+    CONTROL_LOG_MAX_BYTES = 262144
+
+    def _log_control_event(self, message: str) -> None:
+        """Cycle-failure / recovery trace in the data home.
+
+        Healthy loops never write here: an empty or missing control_loop.log
+        means the WMI path has been clean since install. Written from GUI-
+        thread slots only (single writer, no lock needed).
+        """
+        try:
+            path = os.path.join(self.state.paths.base_dir, "control_loop.log")
+            try:
+                if os.path.exists(path) and os.path.getsize(path) > self.CONTROL_LOG_MAX_BYTES:
+                    os.replace(path, path + ".old")
+            except OSError:
+                pass
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {message}\n")
+        except OSError:
+            pass
+
     def _write_heartbeat(self, force: bool = False):
         """Mtime is the liveness signal read by the external watchdog.
         Cycle-path writes are batched to at most one per 5 s — still an
@@ -401,7 +422,6 @@ class AppServices(QObject):
             if mode == FAN_MODE_AUTO:
                 self._auto_target = None
                 self._reset_stall_state()
-                self._arm_software_ramp()
                 self.auto_temp_controller.reset_state()
                 self.state.set_applied_fan_speed_percent(INIT_APPLIED_PERCENTAGE)
                 if not self.controller_timer.isActive():
@@ -414,7 +434,6 @@ class AppServices(QObject):
             elif mode == FAN_MODE_CUSTOM:
                 self._auto_target = None
                 self._reset_stall_state()
-                self._arm_software_ramp()
                 if not self.controller_timer.isActive():
                     self.controller_timer.start()
                 self.state.set_applied_fan_mode(FAN_MODE_CUSTOM)
@@ -425,8 +444,6 @@ class AppServices(QObject):
             elif mode == FAN_MODE_BIOS:
                 if self.controller_timer.isActive():
                     self.controller_timer.stop()
-                self._kick_armed = False
-                self._spinning_down = False
                 self._auto_target = None
                 self._reset_stall_state()
                 self._request_bios_control(generation=generation, fallback_mode=previous_mode)
@@ -582,6 +599,19 @@ class AppServices(QObject):
         self._last_charge_write_ms = time.monotonic()
         self._schedule_charge_readback(threshold)
 
+    def _smooth_control_temp(self, state: Optional[float], raw: float) -> float:
+        """EMA for the control path only (alpha TEMP_SMOOTH_ALPHA).
+
+        Error values pass through untouched so fault detection keeps its exact
+        contract; the first valid reading after an error re-seeds instead of
+        easing in from stale state.
+        """
+        if raw == TEMP_READ_ERROR_VALUE:
+            return raw
+        if state is None or state == TEMP_READ_ERROR_VALUE:
+            return raw
+        return state + TEMP_SMOOTH_ALPHA * (raw - state)
+
     @Slot()
     def _perform_control_cycle(self):
         """心跳（非阻塞）：向 WMI worker 提交一次温度/转速读取，回调里决定目标并异步写入。"""
@@ -638,35 +668,56 @@ class AppServices(QObject):
             # dashboard is current on show (footer dedupes identical text).
             self.state.set_gpu_util(gpu_util if gpu_util is not None else -1)
 
+            # Control path runs on EMA-smoothed temps: integer EC temps
+            # through the curve slopes would otherwise wobble the target
+            # every tick. Raw temps still feed the UI, hot-alert, and fault
+            # detection (the EMA passes error values through untouched, so
+            # fault semantics are unchanged).
+            cpu_ctrl = self._smooth_control_temp(self._cpu_ctrl_temp, cpu_temp)
+            gpu_ctrl = self._smooth_control_temp(self._gpu_ctrl_temp, gpu_temp)
+            self._cpu_ctrl_temp = cpu_ctrl
+            self._gpu_ctrl_temp = gpu_ctrl
+
             if mode == FAN_MODE_CUSTOM:
                 base_target = 0
                 custom_speed = int(self._current_profile.get_custom_fan_speed())
             else:
                 # NVML feed-forward: lift the GPU curve input by a power-based
                 # offset so the fan reacts while heat is still travelling to
-                # the heatsink. Unknown power / asleep dGPU -> no offset.
-                gpu_ff_temp = gpu_temp
-                if (gpu_temp != TEMP_READ_ERROR_VALUE
+                # the heatsink. Unknown power / asleep dGPU -> no offset. The
+                # offset cap eases in after an NVML idle-skip resume so the
+                # fans don't step off the floor duty in one write.
+                gpu_ff_temp = gpu_ctrl
+                if (gpu_ctrl != TEMP_READ_ERROR_VALUE
                         and self._current_profile.get_value("gpu_power_feedforward", True)):
-                    gpu_ff_temp = gpu_temp + feedforward_offset(
-                        gpu_power_w, NVML_FF_IDLE_W, NVML_FF_K_C_PER_W, NVML_FF_MAX_BOOST_C)
-                base_target = self.auto_temp_controller.theoretical_target(cpu_temp, gpu_ff_temp)
+                    gpu_ff_temp = gpu_ctrl + feedforward_offset(
+                        gpu_power_w, NVML_FF_IDLE_W, NVML_FF_K_C_PER_W,
+                        self.wmi_interface.ff_max_boost_cap())
+                base_target = self.auto_temp_controller.theoretical_target(cpu_ctrl, gpu_ff_temp)
                 custom_speed = 0
 
+            # Guard floors key on RAW temps: the EMA lags load onset by a few
+            # ticks, and a lagging floor let an under-floor duty through at
+            # load onset (bench 2026-11-16: 26 % written at raw cpu 90 °C).
+            # guard_floor's engage/release band already debounces integer
+            # sensor noise, so the EMA buys nothing here.
+            self._cpu_guard_floor = guard_floor(cpu_temp, self._cpu_guard_floor)
+            self._gpu_guard_floor = guard_floor(gpu_temp, self._gpu_guard_floor)
             raw_target = select_fan_target(
-                mode, custom_speed, base_target, cpu_temp, gpu_temp, gpu_asleep
+                mode, custom_speed, base_target, cpu_temp, gpu_temp, gpu_asleep,
+                self._cpu_guard_floor, self._gpu_guard_floor,
             )
             if mode == FAN_MODE_AUTO:
-                target = next_target(self._auto_target, raw_target, DEFAULT_TARGET_HYSTERESIS_PERCENT)
+                target, self._zero_streak = next_target(
+                    self._auto_target, raw_target,
+                    DEFAULT_TARGET_HYSTERESIS_PERCENT, self._zero_streak)
                 self._auto_target = target
             else:
                 target = raw_target
 
-            percent, self._kick_armed, self._spinning_down = next_fan_percent(
+            percent = next_fan_percent(
                 self.state.get_applied_fan_speed_percent(),
                 target,
-                self._kick_armed,
-                self._spinning_down,
             )
             self._update_fan_stall(percent, fan1_rpm, fan2_rpm, gpu_asleep)
             self._update_hot_alert(cpu_temp, gpu_temp, gpu_asleep)
@@ -775,6 +826,7 @@ class AppServices(QObject):
 
     def _on_cycle_failed(self, error: Exception):
         print(f"WMI operation failed in control cycle: {error}", file=sys.stderr)
+        self._log_control_event(f"cycle failed: {error!r}")
         self.state.set_controller_status_message(tr("wmi_error"))
         self._auto_target = None
         self._reset_stall_state()
@@ -791,6 +843,7 @@ class AppServices(QObject):
         self._cycle_generation += 1
         self._pending_cycle = None
         self._auto_target = None
+        self._log_control_event("cycle watchdog fired: rebuilding worker")
         try:
             self.wmi_interface.stop(join_timeout=1.0)
         except Exception:

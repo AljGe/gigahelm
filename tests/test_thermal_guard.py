@@ -44,6 +44,18 @@ class ForceDutyPercentTests(unittest.TestCase):
         self.assertEqual(force_duty_percent(91, None), 80)
         self.assertEqual(force_duty_percent(91, -1), 80)
 
+    def test_engaged_floor_holds_inside_release_band(self):
+        # Mirrors guard_floor: a floor forced at 80 degC holds until the CPU
+        # cools to 77 degC, so integer sensor noise cannot pump the fans.
+        self.assertEqual(force_duty_percent(78.5, None, engaged_floor=40), 40)
+        self.assertEqual(force_duty_percent(77.0, None, engaged_floor=40), 40)
+        self.assertIsNone(force_duty_percent(76.9, None, engaged_floor=40))
+        self.assertEqual(force_duty_percent(82.5, None, engaged_floor=60), 60)
+        # Release band is [threshold - 3, threshold): 82.4 still holds the
+        # 60 % engagement; below 82 it releases and 40 % engages fresh.
+        self.assertEqual(force_duty_percent(82.4, None, engaged_floor=60), 60)
+        self.assertEqual(force_duty_percent(81.9, None, engaged_floor=60), 40)
+
     def test_thresholds_match_fan_target(self):
         self.assertEqual(THERMAL_GUARDS, [(80.0, 40), (85.0, 60), (90.0, 80)])
         self.assertEqual(DUTY_RAW_MAX, 227.0)

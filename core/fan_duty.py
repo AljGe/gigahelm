@@ -15,3 +15,13 @@ def percent_to_raw(percent: int) -> int:
         p = FAN_PERCENT_MIN_SPIN
     raw = math.ceil(p / 100.0 * FAN_RAW_MAX)
     return FAN_RAW_MAX if raw > FAN_RAW_MAX else raw
+
+
+def effective_percent(percent: int) -> int:
+    """Percent as the EC actually drives it.
+
+    Every request in 1-24 % is written as the 25 % minimum-spin duty
+    (percent_to_raw), so UI percentages in that range are fiction; display
+    the effective duty instead.
+    """
+    return int(round(percent_to_raw(percent) / FAN_RAW_MAX * 100.0))

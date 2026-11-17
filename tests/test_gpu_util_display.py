@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,7 @@ from core.state import AppState  # noqa: E402
 from core.profile_manager import ProfileManager  # noqa: E402
 from core.settings_manager import SettingsManager  # noqa: E402
 from core.app_services import AppServices  # noqa: E402
+import core.wmi_interface as wmi_module  # noqa: E402
 from gui.theme import ThemeManager  # noqa: E402
 from gui.dashboard import Dashboard  # noqa: E402
 from config.settings import WMIInternalSignal, RPM_READ_ERROR_VALUE  # noqa: E402
@@ -72,6 +74,13 @@ class FakeWMI:
 
 class UtilCycleTests(unittest.TestCase):
     def setUp(self):
+        # Hermetic at elevation: pin the real interface's start to False so
+        # profile activation cannot drive a live cycle (see
+        # test_gpu_feedforward for the failure mode).
+        patcher = patch.object(wmi_module.WMIInterface, "start",
+                               return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.mkdtemp(prefix="gigahelm-util-")
         self.state = AppState(path_manager=PathManager(
             base_dir=self.tmp, executable_path="python.exe", main_script_path=""))
