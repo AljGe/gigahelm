@@ -71,6 +71,12 @@ class LightweightCurveCanvas(QWidget):
         self._cached_gpu_curve_poly: Optional[QPolygonF] = None
         self._last_cpu_indicator_region = QRegion()
         self._last_gpu_indicator_region = QRegion()
+        # EMA-smoothed control temps (published by app_services; None until
+        # the first control cycle). Drawn as a hollow operating-point ring.
+        self._cpu_ema_temp: Optional[float] = None
+        self._gpu_ema_temp: Optional[float] = None
+        self._last_cpu_ema_region = QRegion()
+        self._last_gpu_ema_region = QRegion()
 
         self._cpu_interpolator: Optional[PchipInterpolator] = None
         self._gpu_interpolator: Optional[PchipInterpolator] = None
@@ -81,6 +87,7 @@ class LightweightCurveCanvas(QWidget):
         self._on_active_profile_changed(self.state.get_active_profile())
         self.set_active_curve(self.state.get_active_curve_type())
         self.update_temp_indicators(self.state.get_cpu_temp(), self.state.get_gpu_temp())
+        self.update_ema_indicators(self.state.get_cpu_ctrl_temp(), self.state.get_gpu_ctrl_temp())
 
     # ---------------------------------------------------------------- setup ---
     def _connect_signals(self):
@@ -91,6 +98,8 @@ class LightweightCurveCanvas(QWidget):
         self.state.active_curve_type_changed.connect(self.set_active_curve)
         self.state.cpu_temp_changed.connect(lambda t: self.update_temp_indicators(cpu_temp=t))
         self.state.gpu_temp_changed.connect(lambda t: self.update_temp_indicators(gpu_temp=t))
+        self.state.cpu_ctrl_temp_changed.connect(lambda t: self.update_ema_indicators(cpu_temp=t))
+        self.state.gpu_ctrl_temp_changed.connect(lambda t: self.update_ema_indicators(gpu_temp=t))
 
     @Slot(ProfileState)
     def _on_active_profile_changed(self, profile: Optional[ProfileState]):
@@ -201,6 +210,7 @@ class LightweightCurveCanvas(QWidget):
         self._draw_single_curve(painter, self.cpu_curve_data, 'cpu', self._cached_cpu_curve_poly)
 
         self._draw_temp_indicators(painter)
+        self._draw_ema_markers(painter)
         self._draw_indicator_badges(painter)
         self._draw_point_badge(painter)
         painter.end()
@@ -435,6 +445,26 @@ class LightweightCurveCanvas(QWidget):
 
     # ---------------------------------------------------------- indicators ---
     @Slot()
+    def update_ema_indicators(self, cpu_temp: Optional[float] = None, gpu_temp: Optional[float] = None):
+        """Same partial-update pattern as update_temp_indicators, for the
+        EMA operating-point markers."""
+        update_region = QRegion()
+        if cpu_temp is not None:
+            update_region += self._last_cpu_ema_region
+            self._cpu_ema_temp = cpu_temp
+            new_region = self._calculate_ema_region(cpu_temp, 'cpu')
+            update_region += new_region
+            self._last_cpu_ema_region = new_region
+        if gpu_temp is not None:
+            update_region += self._last_gpu_ema_region
+            self._gpu_ema_temp = gpu_temp
+            new_region = self._calculate_ema_region(gpu_temp, 'gpu')
+            update_region += new_region
+            self._last_gpu_ema_region = new_region
+        if not update_region.isEmpty():
+            self.update(update_region)
+
+    @Slot()
     def update_temp_indicators(self, cpu_temp: Optional[float] = None, gpu_temp: Optional[float] = None):
         update_region = QRegion()
 
@@ -470,6 +500,19 @@ class LightweightCurveCanvas(QWidget):
 
         return QRegion()
 
+    def _calculate_ema_region(self, temp: Optional[float], curve_type: CurveType) -> QRegion:
+        """Vertical strip covering the EMA guide line + ring for repaints."""
+        if temp is None or temp == TEMP_READ_ERROR_VALUE or not self.get_curve_data(curve_type):
+            return QRegion()
+        min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
+        if temp < min_temp:
+            return QRegion()
+        speed = self._get_target_speed_for_indicator(temp, curve_type)
+        if speed == -1:
+            return QRegion()
+        p = self._data_to_widget_coords(temp, speed)
+        return QRegion(QRect(int(p.x()) - 6, int(self._plot_area.top()), 12, int(self._plot_area.height())))
+
     def _draw_temp_indicators(self, painter: QPainter):
         palette = self.theme.palette()
         cpu_temp = self.state.get_cpu_temp()
@@ -488,6 +531,32 @@ class LightweightCurveCanvas(QWidget):
             pen = QPen(color, 1.5, Qt.PenStyle.DotLine); painter.setPen(pen)
             painter.drawLine(int(p.x()), int(self._plot_area.bottom()), int(p.x()), int(p.y()))
             painter.drawLine(int(self._plot_area.left()), int(p.y()), int(p.x()), int(p.y()))
+
+    def _draw_ema_markers(self, painter: QPainter):
+        """Hollow ring at the EMA-smoothed control temperature on each curve
+        (the value the controller actually acts on) with a faint vertical
+        guide. Deliberately distinct from the raw-temp dotted crosshairs."""
+        palette = self.theme.palette()
+        min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
+        for curve_type, temp in (('cpu', self._cpu_ema_temp), ('gpu', self._gpu_ema_temp)):
+            if temp is None or temp == TEMP_READ_ERROR_VALUE or temp < min_temp:
+                continue
+            if not self.get_curve_data(curve_type):
+                continue
+            speed = self._get_target_speed_for_indicator(temp, curve_type)
+            if speed == -1:
+                continue
+            p = self._data_to_widget_coords(temp, speed)
+            painter.save()
+            painter.setClipPath(self._plot_clip_path())
+            guide = QColor(palette.text)
+            guide.setAlphaF(0.22)
+            painter.setPen(QPen(guide, 1))
+            painter.drawLine(QPointF(p.x(), self._plot_area.bottom()), p)
+            painter.setPen(QPen(QColor(palette.text), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(p, 4.5, 4.5)
+            painter.restore()
 
     def _get_target_speed_for_indicator(self, temperature: float, curve_type: CurveType) -> int:
         table = self.get_curve_data(curve_type)
@@ -552,7 +621,18 @@ class LightweightCurveCanvas(QWidget):
     def _validate_and_sort(self, table: FanTable) -> FanTable:
         min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C) if self._appearance_settings else 0
         valid = [[max(min_temp, min(MAX_TEMP_C, p[0])), max(MIN_FAN_PERCENT, min(MAX_FAN_PERCENT, p[1]))] for p in table if isinstance(p, list) and len(p) == 2]
-        return sorted(valid, key=lambda x: x[0])
+        valid.sort(key=lambda x: x[0])
+        # Merge same-temperature points, keeping the higher speed (more
+        # cooling). Duplicates render as two stacked dots and hand
+        # PchipInterpolator a zero x-gap (h=0 -> ZeroDivisionError -> silent
+        # piecewise-linear fallback for the whole curve).
+        deduped: FanTable = []
+        for point in valid:
+            if deduped and deduped[-1][0] == point[0]:
+                deduped[-1][1] = max(deduped[-1][1], point[1])
+            else:
+                deduped.append(point)
+        return deduped
 
     def _update_curve_in_state(self, curve_type: CurveType, data: FanTable):
         self.profile_manager.set_curve_data(curve_type, data)
@@ -616,7 +696,20 @@ class LightweightCurveCanvas(QWidget):
         temp, speed = self._widget_to_data_coords(pos)
         before = [list(p) for p in self.get_curve_data(self.active_curve_type)]
         data = [list(p) for p in before]
-        data.append([int(round(temp)), int(round(speed))])
+        occupied = {p[0] for p in data}
+        new_temp = int(round(temp))
+        if new_temp in occupied:
+            # A double-click just outside the pick radius can round onto an
+            # existing temperature; snap to the nearest free one instead of
+            # stacking a second dot (and breaking the spline) on top of it.
+            min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
+            new_temp = next((c for d in range(1, MAX_TEMP_C)
+                             for c in (new_temp - d, new_temp + d)
+                             if min_temp <= c <= MAX_TEMP_C and c not in occupied), None)
+            if new_temp is None:
+                self.transient_status_signal.emit(tr("curve_no_room_for_point"), 2000)
+                return
+        data.append([new_temp, int(round(speed))])
         data.sort(key=lambda p: p[0])
         for i in range(1, len(data)):
             if data[i][1] < data[i-1][1]:
@@ -653,14 +746,23 @@ class LightweightCurveCanvas(QWidget):
         temp = max(min_temp, min(MAX_TEMP_C, temp))
         speed = max(MIN_FAN_PERCENT, min(MAX_FAN_PERCENT, speed))
 
-        # 2. 更新当前点的位置
+        # 2. Keep 1 °C distance to the direct neighbours; they stay put.
+        #    The old push-away chain teleported every overtaken point onto
+        #    dragged_temp + 1 and, clamped at the 40/100 °C plot edges,
+        #    collapsed two points onto the SAME temperature: two stacked
+        #    dots plus a zero-x-gap spline failure.
+        if idx > 0:
+            temp = max(temp, data[idx - 1][0] + 1)
+        if idx < len(data) - 1:
+            temp = min(temp, data[idx + 1][0] - 1)
+
+        # 3. 更新当前点的位置
         data[idx] = [int(round(temp)), int(round(speed))]
 
-        # 3. 实时强制水平和垂直的连锁反应
-        self._enforce_temperature_separation_during_drag(data, idx)
+        # 4. 实时强制垂直方向的联动（速度只能增加或持平）
         self._enforce_speed_monotonicity_during_drag(data, idx)
 
-        # 4. 更新状态并重绘
+        # 5. 更新状态并重绘
         setattr(self, f"_{self.active_curve_type}_interpolator", None)
         self._recache_active_curve(data)
         self.update()
@@ -676,19 +778,3 @@ class LightweightCurveCanvas(QWidget):
         for i in range(dragged_index, len(data) - 1):
             if data[i][1] > data[i+1][1]:
                 data[i+1][1] = data[i][1]
-
-    def _enforce_temperature_separation_during_drag(self, data: FanTable, dragged_index: int):
-        """实时强制温度点的最小间距和顺序。"""
-        min_temp = self._get_setting('min_display_temp_c', DEFAULT_MIN_DISPLAY_TEMP_C)
-
-        # 向后连锁（处理向右拖动，推开右边的点）
-        for i in range(dragged_index, len(data) - 1):
-            if data[i+1][0] <= data[i][0]:
-                new_temp = min(MAX_TEMP_C, data[i][0] + 1)
-                data[i+1][0] = new_temp
-
-        # 向前连锁（处理向左拖动，推开左边的点）
-        for i in range(dragged_index, 0, -1):
-            if data[i-1][0] >= data[i][0]:
-                new_temp = max(min_temp, data[i][0] - 1)
-                data[i-1][0] = new_temp
