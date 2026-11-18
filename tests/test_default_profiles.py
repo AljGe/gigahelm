@@ -12,7 +12,10 @@ sys.path.insert(0, str(ROOT))
 from core.path_manager import PathManager  # noqa: E402
 from core.state import AppState  # noqa: E402
 from core.profile_manager import ProfileManager  # noqa: E402
-from config.settings import DEFAULT_PROFILES, AC_CPU_FAN_TABLE, AC_GPU_FAN_TABLE, BATT_CPU_FAN_TABLE
+from config.settings import (
+    DEFAULT_PROFILES, AC_CPU_FAN_TABLE, AC_GPU_FAN_TABLE, BATT_CPU_FAN_TABLE,
+    SILENT_CPU_FAN_TABLE,
+)
 
 
 class DefaultProfilesTests(unittest.TestCase):
@@ -28,6 +31,7 @@ class DefaultProfilesTests(unittest.TestCase):
         names = self.state.get_profile_names()
         self.assertIn("Tuned AC", names)
         self.assertIn("Tuned Battery", names)
+        self.assertIn("Silent", names)
         ac = self.state.get_profile_names() and self._profile("Tuned AC")
         self.assertEqual(ac.get_value("cpu_fan_table"), AC_CPU_FAN_TABLE)
         self.assertEqual(ac.get_value("battery_charge_policy"), "bios")
@@ -35,6 +39,20 @@ class DefaultProfilesTests(unittest.TestCase):
         self.assertEqual(batt.get_value("cpu_fan_table"), BATT_CPU_FAN_TABLE)
         self.assertEqual(batt.get_value("battery_charge_policy"), "custom")
         self.assertEqual(batt.get_value("battery_charge_threshold"), 80)
+
+    def test_silent_is_fresh_config_default_and_floor_compliant(self):
+        self.manager.load_config()
+        # first DEFAULT_PROFILES entry -> active on a fresh config
+        self.assertEqual(self.state.get_active_profile_name(), "Silent")
+        silent = self.state.get_active_profile()
+        self.assertEqual(silent.get_value("cpu_fan_table"), SILENT_CPU_FAN_TABLE)
+        self.assertEqual(silent.get_value("gpu_fan_table"), AC_GPU_FAN_TABLE)
+        self.assertEqual(silent.get_value("battery_charge_policy"), "custom")
+        # every point at/above a thermal-guard threshold sits on its floor
+        floor_at = dict(((80, 40), (85, 60), (90, 80)))
+        for temp, percent in silent.get_value("cpu_fan_table"):
+            floor = next((f for t, f in floor_at.items() if temp >= t), 0)
+            self.assertGreaterEqual(percent, floor, f"{temp} C below guard floor")
 
     def _profile(self, name):
         self.state.set_active_profile_name(name)
