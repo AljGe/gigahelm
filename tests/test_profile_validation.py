@@ -17,6 +17,23 @@
         self._load({"fan_load_assist": False})
         self.assertIs(self.profile.get_value("fan_load_assist"), False)
 
+    # --- anti_beat_detune / fan_load_assist --------------------------------
+    def test_detune_string_rejected(self):
+        self._load({"anti_beat_detune": "false"})
+        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
+
+    def test_detune_bool_passes_through(self):
+        self._load({"anti_beat_detune": False})
+        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
+
+    def test_assist_string_rejected(self):
+        self._load({"fan_load_assist": "false"})
+        self.assertIs(self.profile.get_value("fan_load_assist"), True)
+
+    def test_assist_bool_passes_through(self):
+        self._load({"fan_load_assist": False})
+        self.assertIs(self.profile.get_value("fan_load_assist"), False)
+
 
 A hand-edited or corrupted config must never put the app into a non-
 converging state: unknown fan mode (zombie control loop), unmapped charge
