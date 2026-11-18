@@ -56,6 +56,18 @@ def set_custom_percent(percent: int) -> None:
     appctl.apply_profile(PROFILE, "custom")
 
 
+def restore(previous: str, prev_mode: str) -> None:
+    """Drop the bench profile from the config, re-activate the user's own."""
+    cfg = appctl.load_cfg()
+    cfg.get("profiles", {}).pop(PROFILE, None)
+    order = cfg.get("profile_order", [])
+    if PROFILE in order:
+        order.remove(PROFILE)
+    appctl.save_cfg_atomic(cfg)
+    appctl.apply_profile(previous, prev_mode)
+    print(f"restored profile: {previous}")
+
+
 def main() -> int:
     os.makedirs(RESULTS, exist_ok=True)
     cfg = appctl.load_cfg()
@@ -63,6 +75,8 @@ def main() -> int:
     if not previous:
         print("no active profile recorded - refusing to guess a restore target")
         return 2
+    prev_mode = str(cfg.get("profiles", {}).get(previous, {})
+                    .get("fan_mode", "auto"))
 
     probe = ECProbe()
     probe.connect()
@@ -78,6 +92,9 @@ def main() -> int:
               "listen and note the quiet steps", flush=True)
         with open(ROWS_PATH, "a", encoding="utf-8") as rows:
             for percent in STEPS:
+                raw = math.ceil(percent / 100.0 * 227)
+                print(f"  >>> now playing {percent:>2} % (raw {raw:>3}) - "
+                      "listen", flush=True)
                 set_custom_percent(percent)
                 time.sleep(SETTLE_S)
                 rpm_seen: list[int] = []
@@ -92,16 +109,14 @@ def main() -> int:
                     time.sleep(SAMPLE_S)
                 median_rpm = statistics.median(rpm_seen) if rpm_seen else -1
                 spread = (max(rpm_seen) - min(rpm_seen)) if len(rpm_seen) > 1 else 0
-                raw = math.ceil(percent / 100.0 * 227)
-                print(f"  {percent:>2} % (raw {raw:>3}): rpm median "
+                print(f"      {percent:>2} % (raw {raw:>3}): rpm median "
                       f"{median_rpm:.0f}, jitter {spread}", flush=True)
     except KeyboardInterrupt:
         print("\ninterrupted - restoring previous profile")
     finally:
         if previous != PROFILE:
             try:
-                appctl.apply_profile(previous, "auto")
-                print(f"restored profile: {previous}")
+                restore(previous, prev_mode)
             except appctl.ApplyError as exc:
                 print(f"FAILED to restore {previous!r}: {exc} - "
                       "re-apply it manually", file=sys.stderr)
