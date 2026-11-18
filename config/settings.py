@@ -88,7 +88,8 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
 }
 
 # --- 出厂配置方案 ---
-# The shipped profile set (this machine's bench-tuned curves). A config with
+# The shipped profile set: Silent (noise-first, the everyday preset) plus the
+# bench-tuned Tuned AC / Tuned Battery load anchors. A config with
 # no profiles (fresh install, deleted config) regenerates these, so an
 # accidental reset loses nothing that a restart can't restore.
 # EC floor rule: the AORUS 15P YD stalls below raw duty 57 (= 25 %), and
@@ -108,6 +109,13 @@ BATT_CPU_FAN_TABLE: List[List[int]] = [
     [50, 0], [58, 0], [60, 30], [63, 35], [66, 45], [70, 55], [73, 65],
     [75, 70], [77, 75], [80, 80], [83, 85], [86, 90], [90, 95], [95, 95],
 ]
+# Noise-first: the beat-free 30 % park (raw 69) as a flat plateau through the
+# ordinary desktop band, then gentle rises; sits on the thermal-guard floors
+# (80->40, 85->60, 90->80). GPU table is the shared AC table (deep-copied per
+# profile by _default_profile, so no aliasing).
+SILENT_CPU_FAN_TABLE: List[List[int]] = [
+    [50, 0], [58, 0], [60, 30], [70, 30], [80, 44], [85, 60], [90, 80], [95, 100],
+]
 
 
 def _default_profile(**overrides: Any) -> Dict[str, Any]:
@@ -120,6 +128,15 @@ def _default_profile(**overrides: Any) -> Dict[str, Any]:
 
 
 DEFAULT_PROFILES: Dict[str, Dict[str, Any]] = {
+    # First entry = fresh-config active profile (ProfileManager falls back to
+    # next(iter(DEFAULT_PROFILES))): open quiet, performance presets on tap.
+    "Silent": _default_profile(
+        cpu_fan_table=SILENT_CPU_FAN_TABLE,
+        gpu_fan_table=AC_GPU_FAN_TABLE,
+        fan_mode="auto",
+        battery_charge_policy=CHARGE_POLICY_CUSTOM,
+        battery_charge_threshold=80,
+    ),
     "Tuned AC": _default_profile(
         cpu_fan_table=AC_CPU_FAN_TABLE,
         gpu_fan_table=AC_GPU_FAN_TABLE,
