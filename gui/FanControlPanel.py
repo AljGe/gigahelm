@@ -57,6 +57,20 @@ class FanControlPanel(BaseControlPanel):
         split_row.addWidget(self.split_checkbox)
         split_row.addStretch(1)
         self.layout().addLayout(split_row)
+        self.detune_checkbox = QCheckBox(tr("detune_checkbox_label"), self)
+        tooltip_manager.register(self.detune_checkbox, "detune_checkbox_tooltip")
+        detune_row = QHBoxLayout()
+        detune_row.setContentsMargins(0, 0, 0, 0)
+        detune_row.addWidget(self.detune_checkbox)
+        detune_row.addStretch(1)
+        self.layout().addLayout(detune_row)
+        self.assist_checkbox = QCheckBox(tr("assist_checkbox_label"), self)
+        tooltip_manager.register(self.assist_checkbox, "assist_checkbox_tooltip")
+        assist_row = QHBoxLayout()
+        assist_row.setContentsMargins(0, 0, 0, 0)
+        assist_row.addWidget(self.assist_checkbox)
+        assist_row.addStretch(1)
+        self.layout().addLayout(assist_row)
 
     def _connect_live_signals(self) -> None:
         self.state.applied_fan_mode_changed.connect(self._on_live_changed)
@@ -69,6 +83,12 @@ class FanControlPanel(BaseControlPanel):
         self.split_checkbox.toggled.connect(self._on_split_toggled)
         self.state.active_profile_changed.connect(lambda *_: self._refresh_split_checkbox())
         self._refresh_split_checkbox()
+        self.detune_checkbox.toggled.connect(self._on_detune_toggled)
+        self.state.active_profile_changed.connect(lambda *_: self._refresh_detune_checkbox())
+        self._refresh_detune_checkbox()
+        self.assist_checkbox.toggled.connect(self._on_assist_toggled)
+        self.state.active_profile_changed.connect(lambda *_: self._refresh_assist_checkbox())
+        self._refresh_assist_checkbox()
 
     @Slot(bool)
     def _on_ff_toggled(self, checked: bool) -> None:
@@ -84,6 +104,8 @@ class FanControlPanel(BaseControlPanel):
     @Slot(bool)
     def _on_split_toggled(self, checked: bool) -> None:
         self.profile_manager.set_profile_value("split_fan_control", checked)
+        # Detune/assist act only under split control; refresh their gating.
+        self._apply_enablement()
 
     def _refresh_split_checkbox(self) -> None:
         profile = self.state.get_active_profile()
@@ -91,6 +113,28 @@ class FanControlPanel(BaseControlPanel):
         self.split_checkbox.blockSignals(True)
         self.split_checkbox.setChecked(checked)
         self.split_checkbox.blockSignals(False)
+
+    @Slot(bool)
+    def _on_detune_toggled(self, checked: bool) -> None:
+        self.profile_manager.set_profile_value("anti_beat_detune", checked)
+
+    def _refresh_detune_checkbox(self) -> None:
+        profile = self.state.get_active_profile()
+        checked = bool(profile.get_value("anti_beat_detune", True)) if profile else True
+        self.detune_checkbox.blockSignals(True)
+        self.detune_checkbox.setChecked(checked)
+        self.detune_checkbox.blockSignals(False)
+
+    @Slot(bool)
+    def _on_assist_toggled(self, checked: bool) -> None:
+        self.profile_manager.set_profile_value("fan_load_assist", checked)
+
+    def _refresh_assist_checkbox(self) -> None:
+        profile = self.state.get_active_profile()
+        checked = bool(profile.get_value("fan_load_assist", True)) if profile else True
+        self.assist_checkbox.blockSignals(True)
+        self.assist_checkbox.setChecked(checked)
+        self.assist_checkbox.blockSignals(False)
 
     def _apply_enablement(self) -> None:
         super()._apply_enablement()
@@ -117,6 +161,18 @@ class FanControlPanel(BaseControlPanel):
             tooltip_manager.unregister(self.split_checkbox)
             self.split_checkbox.setToolTip(tr("split_disabled_not_auto"))
             self.split_checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
+        # Detune/assist only act in split auto mode: custom mode drives both
+        # channels with one slider, mirrored mode couples them.
+        shaping_enabled = enabled and self.split_checkbox.isChecked()
+        for checkbox in (self.detune_checkbox, self.assist_checkbox):
+            checkbox.setEnabled(shaping_enabled)
+            if shaping_enabled:
+                checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, False)
+                checkbox.setToolTip("")
+            else:
+                tooltip_manager.unregister(checkbox)
+                checkbox.setToolTip(tr("shaping_disabled_not_split"))
+                checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
 
     def _on_live_changed(self, *_args) -> None:
         self._update_live_display()

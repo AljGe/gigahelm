@@ -74,6 +74,8 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "battery_charge_threshold": DEFAULT_CHARGE_THRESHOLD,
     "gpu_power_feedforward": True,
     "split_fan_control": True,
+    "anti_beat_detune": True,
+    "fan_load_assist": True,
     "controller_update_interval_ms": DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS,
     "min_display_temp_c": DEFAULT_MIN_DISPLAY_TEMP_C,
     "curve_point_picker_radius": DEFAULT_CURVE_POINT_PICKER_RADIUS,
@@ -249,6 +251,19 @@ NVML_FF_RESUME_TEMP_C: float = 65.0
 # alpha 0.5 -> one-tick lag at the 1.5 s control cadence; raw temps still feed
 # the UI, hot-alert, and fault detection.
 TEMP_SMOOTH_ALPHA: float = 0.5
+# --- Acoustic shaping (core/noise_shaping.py; per-profile toggles
+# anti_beat_detune / fan_load_assist, split auto mode only) ---
+# Two fans on one duty beat at tolerance RPM spread (tens of Hz = roughness);
+# lifting the GPU channel past the band detunes the blade-pass tones. Must
+# exceed TARGET_HYSTERESIS_PERCENT or next_target swallows the offset.
+ANTI_BEAT_DETUNE_PERCENT: int = 2
+ANTI_BEAT_MAX_DUTY_PERCENT: int = 45
+# Load assist: lift the already-spinning cooler channel toward the hot one
+# (shared 5-heatpipe heatsink: GPU-side airflow cools the CPU fin section).
+ASSIST_TRIGGER_SPREAD_PERCENT: int = 10
+ASSIST_MARGIN_PERCENT: int = 10
+ASSIST_MAX_RISE_PERCENT: int = 8
+ASSIST_MAX_TARGET_PERCENT: int = 40
 # While the dGPU is latched asleep, re-probe the EC GPU sensors every Nth
 # sweep instead of parking for 19 (~12-20 s blind after a real wake). EC
 # register reads never touch NVML, so D3cold is unaffected.
