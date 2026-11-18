@@ -72,6 +72,19 @@ class TonalMetricTests(unittest.TestCase):
             m = aa.analyze_recording(path)
             self.assertIsNotNone(m["split_hz"])
             self.assertAlmostEqual(m["split_hz"], 50.0, delta=12.0)
+            # 50 Hz sits inside the roughness band -> flagged as beat.
+            self.assertAlmostEqual(m["beat_hz"], 50.0, delta=12.0)
+
+    def test_near_twin_beat_is_flagged_not_missed(self):
+        # The measured 2026-11-18 failure mode: a 39 Hz twin at 26 % is a
+        # forest of modulation lines - classical prominence reads LOW while
+        # the percept is the WORST roughness. The beat flag must still fire.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "neartwin.wav")
+            _write_wav(path, _signal((2600.0, 2640.0), 2.0))
+            m = aa.analyze_recording(path)
+            self.assertAlmostEqual(m["split_hz"], 40.0, delta=12.0)
+            self.assertAlmostEqual(m["beat_hz"], 40.0, delta=12.0)
 
     def test_far_apart_tones_are_not_reported_as_beat(self):
         # 500 Hz apart: resolved, benign - twin_split must return None.
@@ -108,6 +121,17 @@ class RankingTests(unittest.TestCase):
         }
         ranked = aa.rank_steps(steps)
         self.assertEqual([label for label, _ in ranked], ["29", "27", "25"])
+
+    def test_beating_park_ranks_last_despite_low_tonality(self):
+        # The 26 % failure mode: a rough beat park reads low tonality but
+        # must rank behind any non-beating park.
+        steps = {
+            "26": {"tonality_db": 9.5, "band_db": -98.0, "beat_hz": 39.0},
+            "29": {"tonality_db": 19.6, "band_db": -98.8, "beat_hz": None},
+            "30": {"tonality_db": 21.4, "band_db": -98.0, "beat_hz": None},
+        }
+        ranked = aa.rank_steps(steps)
+        self.assertEqual([label for label, _ in ranked], ["29", "30", "26"])
 
 
 class GuardTests(unittest.TestCase):

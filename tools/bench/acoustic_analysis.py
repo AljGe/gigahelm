@@ -33,10 +33,19 @@ from typing import List, Optional, Sequence, Tuple
 WHISTLE_BAND_HZ = (2500.0, 5500.0)
 #: Half-width (bins) masked around a found peak when measuring its floor.
 PEAK_MASK_BINS = 8
+#: Wider floor mask for tonality: a near-merged twin line (the beat park's
+#: 35-90 Hz split = 9-23 bins) must NOT survive into its own floor, or
+#: prominence collapses exactly when beating is worst (measured 2026-11-18:
+#: 39 Hz twin scored 9.5 dB while single tones scored ~20). ~47 Hz at
+#: 16 kHz / 4096-pt FFT.
+TONALITY_FLOOR_MASK_BINS = 12
 #: Minimum prominence (dB) for a line to count as a second distinct tone.
 TWIN_PROMINENCE_DB = 6.0
 #: Twin tones farther apart than this are resolved (not roughness).
 TWIN_MAX_SPLIT_HZ = 400.0
+#: Twin tones this close (or closer) beat inside the roughness band
+#: (~20-120 Hz); reported as beat_hz and penalized in ranking.
+BEAT_MAX_HZ = 120.0
 
 FFT_BLOCK = 4096
 
@@ -131,17 +140,19 @@ def band_level_db(psd: Sequence[float], rate: int, block: int,
 
 def tonal_prominence_db(psd: Sequence[float], rate: int, block: int,
                         lo: float, hi: float,
+                        floor_mask: int = TONALITY_FLOOR_MASK_BINS,
                         ) -> Tuple[float, float]:
     """(prominence_dB, peak_Hz) of the strongest band tone vs its floor.
 
-    The floor is the median over the band excluding a +-PEAK_MASK_BINS
-    neighborhood of the peak, so a strong tone cannot lift its own
-    reference. Amplitude-invariant: scales out mic gain and AGC.
+    The floor is the median over the band excluding a +-``floor_mask``
+    neighborhood of the peak, so neither the tone's own skirt nor a
+    near-merged twin line can lift the reference. Amplitude-invariant:
+    scales out mic gain and AGC.
     """
     k_lo, k_hi = _band_bins(rate, block, lo, hi)
     peak = max(range(k_lo, k_hi + 1), key=lambda k: psd[k])
     floor_bins = [k for k in range(k_lo, k_hi + 1)
-                  if abs(k - peak) > PEAK_MASK_BINS]
+                  if abs(k - peak) > floor_mask]
     floor = statistics.median([psd[k] for k in floor_bins]) if floor_bins \
         else statistics.median(psd[k_lo:k_hi + 1])
     prominence = 10.0 * math.log10(max(psd[peak], 1e-30)
@@ -194,10 +205,13 @@ def analyze_recording(path: str,
     psds = psd_blocks(samples[start:end], rate, block)
     med = median_psd(psds)
     prominence, peak_hz = tonal_prominence_db(med, rate, block, *band)
+    split = twin_peak_split_hz(med, rate, block, *band)
     return {
         "band_db": round(band_level_db(med, rate, block, *band), 2),
         "tonality_db": round(prominence, 2),
-        "split_hz": twin_peak_split_hz(med, rate, block, *band),
+        "split_hz": split,
+        "beat_hz": split if (split is not None
+                             and split <= BEAT_MAX_HZ) else None,
         "peak_hz": round(peak_hz, 1),
         "broadband_db": round(band_level_db(med, rate, block,
                                             300.0, rate / 2.0 - 500.0), 2),
@@ -206,7 +220,10 @@ def analyze_recording(path: str,
 
 
 def rank_steps(steps: dict) -> List[Tuple[str, dict]]:
-    """Quietest-first ordering: tonality (shape-based, AGC-proof) first,
-    band energy second. ``steps`` maps a label (e.g. '25') to metrics."""
+    """Quietest-first ordering: roughness beat first (beating at 35-120 Hz
+    dominates annoyance regardless of level), then tonality (shape-based,
+    AGC-proof), then band energy. ``steps`` maps a label (e.g. '25') to
+    metrics."""
     return sorted(steps.items(),
-                  key=lambda kv: (kv[1]["tonality_db"], kv[1]["band_db"]))
+                  key=lambda kv: (kv[1].get("beat_hz") is not None,
+                                  kv[1]["tonality_db"], kv[1]["band_db"]))
