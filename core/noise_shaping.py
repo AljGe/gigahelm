@@ -20,7 +20,7 @@ as soft air noise.
 
 from typing import Tuple
 
-from .fan_duty import FAN_PERCENT_MIN_SPIN
+from .fan_duty import FAN_PERCENT_MIN_SPIN, effective_percent
 from config.settings import (
     ANTI_BEAT_DETUNE_PERCENT,
     ANTI_BEAT_MAX_DUTY_PERCENT,
@@ -36,19 +36,28 @@ def anti_beat_detune(cpu_target: int, gpu_target: int,
                      detune: int = ANTI_BEAT_DETUNE_PERCENT,
                      max_duty: int = ANTI_BEAT_MAX_DUTY_PERCENT,
                      ) -> Tuple[int, int]:
-    """Split identical spinning duties so the two blade-pass tones detune.
+    """Split identical beat-zone parks so the two blade-pass tones separate.
 
-    When both channels command the same duty in the tonal band (floor park
-    and light-load plateaus), the GPU channel is lifted by ``detune``.
-    Detune must exceed the target hysteresis band (2 %) or next_target
-    would swallow the offset and the beat would return; unequal targets and
-    stopped/asleep channels (target 0) pass through untouched - the burst
-    asymmetry of split control detunes those pairs on its own, and waking a
-    stopped fan for acoustics trades a start surge for nothing.
+    Measured on this machine (whistle sweep 2026-11-18, three recordings):
+    identical duties park the two fans 35-90 Hz apart up to raw 62 - inside
+    the roughness band, the silent-mode whistle - and the hardware
+    self-separates to ~250 Hz from raw 64 up, which is why parks >= 28 %
+    never detune here: a further shift would drag the pair back toward the
+    roughness band.
+
+    Equality is judged in EC-effective percent: every request of 1-25 %
+    maps to the same raw 57 park, so the comparison - and the raise - must
+    happen in that space or a floor-clamped park would detune to another
+    raw 57 (i.e. not at all). +4 at ~1700 RPM is ~200 Hz of split, resolved
+    like the self-separated parks. The offset must exceed the target
+    hysteresis band (2 %) or next_target would swallow it. Stopped or
+    asleep channels (effective 0) pass through untouched - waking a stopped
+    fan for acoustics trades a start surge for nothing.
     """
-    if (cpu_target == gpu_target
-            and FAN_PERCENT_MIN_SPIN <= cpu_target <= max_duty):
-        return cpu_target, gpu_target + detune
+    cpu_effective = effective_percent(cpu_target)
+    if (0 < cpu_target <= max_duty
+            and effective_percent(gpu_target) == cpu_effective):
+        return cpu_target, cpu_effective + detune
     return cpu_target, gpu_target
 
 
@@ -61,26 +70,30 @@ def fan_load_assist(cpu_target: int, gpu_target: int,
                     ) -> Tuple[int, int]:
     """Spread a one-sided load across both fans of the shared heatsink.
 
-    When one channel's target exceeds the other's by ``trigger`` points and
-    the cooler channel is already spinning, the cooler channel is lifted to
-    ``hot - margin``, capped at ``cool + max_rise`` and ``max_target``. The
-    GPU-side airflow reaches the shared fin array, so the assisted fan buys
-    real headroom for the hot die - bursts then read as two moderately
-    boosted fans instead of one fan sweeping alone through the whistle
-    band. Upward-only: guard floors embedded in either target are never
-    undercut. A stopped cooler channel (< 25 %) stays stopped - waking it
-    fires the 57-raw start surge, exactly what silent mode must avoid.
+    When one channel's effective duty exceeds the other's by ``trigger``
+    points and the cooler channel is already spinning, the cooler channel
+    is lifted to ``hot - margin``, capped at ``cool + max_rise`` and
+    ``max_target``. The GPU-side airflow reaches the shared fin array, so
+    the assisted fan buys real headroom for the hot die - bursts then read
+    as two moderately boosted fans instead of one fan sweeping alone
+    through the whistle band. Upward-only: guard floors embedded in either
+    target are never undercut. A stopped cooler channel (effective 0)
+    stays stopped - waking it fires the 57-raw start surge, exactly what
+    silent mode must avoid. Floor-clamped parks count as spinning
+    (effective 25).
     """
-    if (cpu_target < FAN_PERCENT_MIN_SPIN
-            or gpu_target < FAN_PERCENT_MIN_SPIN):
+    cpu_effective = effective_percent(cpu_target)
+    gpu_effective = effective_percent(gpu_target)
+    if (cpu_effective < FAN_PERCENT_MIN_SPIN
+            or gpu_effective < FAN_PERCENT_MIN_SPIN):
         return cpu_target, gpu_target
-    if cpu_target >= gpu_target:
-        hot, cool = cpu_target, gpu_target
+    if cpu_effective >= gpu_effective:
+        hot, cool = cpu_effective, gpu_effective
+        cpu_hot = True
     else:
-        hot, cool = gpu_target, cpu_target
+        hot, cool = gpu_effective, cpu_effective
+        cpu_hot = False
     if hot - cool < trigger:
         return cpu_target, gpu_target
     assisted = max(cool, min(hot - margin, cool + max_rise, max_target))
-    if cpu_target >= gpu_target:
-        return cpu_target, assisted
-    return assisted, gpu_target
+    return (cpu_target, assisted) if cpu_hot else (assisted, gpu_target)

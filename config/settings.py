@@ -42,8 +42,8 @@ BATTERY_CODE_POLICIES: Dict[int, str] = {0: "bios", 1: "custom", 4: "custom"}
 # 定义了 *每个* 配置文件的结构和默认值
 # EC floor rule: percent_to_raw maps every 1-24 % request to the 25 %
 # minimum-spin duty, so points between 0 and 25 are fiction - use 0 or >= 25.
-DEFAULT_CPU_FAN_TABLE: List[List[int]] = [[50, 0], [60, 25], [70, 25], [80, 40], [85, 60], [90, 80], [95, 100]]
-DEFAULT_GPU_FAN_TABLE: List[List[int]] = [[40, 0], [55, 0], [65, 25], [70, 40], [75, 60], [80, 80], [85, 100]]
+DEFAULT_CPU_FAN_TABLE: List[List[int]] = [[50, 0], [58, 0], [60, 30], [70, 30], [80, 40], [85, 60], [90, 80], [95, 100]]
+DEFAULT_GPU_FAN_TABLE: List[List[int]] = [[40, 0], [55, 0], [63, 0], [65, 30], [70, 40], [75, 60], [80, 80], [85, 100]]
 DEFAULT_FAN_MODE: str = FAN_MODE_AUTO
 DEFAULT_CUSTOM_FAN_SPEED: int = 30 # 百分比
 DEFAULT_CHARGE_POLICY: str = CHARGE_POLICY_BIOS
@@ -93,16 +93,19 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
 # accidental reset loses nothing that a restart can't restore.
 # EC floor rule: the AORUS 15P YD stalls below raw duty 57 (= 25 %), and
 # percent_to_raw maps every 1-24 % request onto that same 25 % duty, so curve
-# points between 0 and 25 are fiction - author every point as 0 or >= 25.
+# points between 0 and 25 are fiction - author every point as 0 or >= 30.
+# Whistle sweep 2026-11-18: park at 30 % (raw 69) - beat-free, stable; and
+# keep a 0-plateau up to ~2 degC below the spin-onset knee so idle temps map
+# to fan-off instead of lingering in the raw 57-62 beat zone.
 AC_CPU_FAN_TABLE: List[List[int]] = [
-    [50, 0], [55, 0], [60, 0], [65, 0], [68, 25], [72, 35],
+    [50, 0], [55, 0], [60, 0], [65, 0], [68, 30], [72, 35],
     [74, 45], [76, 60], [78, 75], [80, 85], [82, 88], [84, 90], [88, 95], [95, 95],
 ]
 AC_GPU_FAN_TABLE: List[List[int]] = [
-    [40, 0], [55, 0], [65, 25], [73, 35], [78, 53], [83, 74], [89, 99],
+    [40, 0], [55, 0], [63, 0], [65, 30], [73, 35], [78, 53], [83, 74], [89, 99],
 ]
 BATT_CPU_FAN_TABLE: List[List[int]] = [
-    [50, 0], [55, 0], [60, 25], [63, 35], [66, 45], [70, 55], [73, 65],
+    [50, 0], [58, 0], [60, 30], [63, 35], [66, 45], [70, 55], [73, 65],
     [75, 70], [77, 75], [80, 80], [83, 85], [86, 90], [90, 95], [95, 95],
 ]
 
@@ -253,11 +256,15 @@ NVML_FF_RESUME_TEMP_C: float = 65.0
 TEMP_SMOOTH_ALPHA: float = 0.5
 # --- Acoustic shaping (core/noise_shaping.py; per-profile toggles
 # anti_beat_detune / fan_load_assist, split auto mode only) ---
-# Two fans on one duty beat at tolerance RPM spread (tens of Hz = roughness);
-# lifting the GPU channel past the band detunes the blade-pass tones. Must
-# exceed TARGET_HYSTERESIS_PERCENT or next_target swallows the offset.
-ANTI_BEAT_DETUNE_PERCENT: int = 2
-ANTI_BEAT_MAX_DUTY_PERCENT: int = 45
+# Sweep 2026-11-18 (three recordings): identical duties park the two fans
+# 35-90 Hz apart up to raw 62 - the roughness band, the silent-mode whistle
+# - and the hardware self-separates to ~250 Hz from raw 64 up. raw 69 (30 %)
+# is the only park that is beat-free AND stable across runs (28-29 % wander).
+ANTI_BEAT_DETUNE_PERCENT: int = 4
+# Detune only guards the beat zone (any spin request 1-27 % parks at raw
+# 57-62); higher parks are already self-separated. Must exceed
+# TARGET_HYSTERESIS_PERCENT or next_target swallows the offset.
+ANTI_BEAT_MAX_DUTY_PERCENT: int = 27
 # Load assist: lift the already-spinning cooler channel toward the hot one
 # (shared 5-heatpipe heatsink: GPU-side airflow cools the CPU fin section).
 ASSIST_TRIGGER_SPREAD_PERCENT: int = 10
