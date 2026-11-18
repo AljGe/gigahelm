@@ -127,16 +127,18 @@ def analyze_recordings(recorded: dict, band_desc: str = "2.5-5.5 kHz") -> None:
             metrics[str(percent)] = aa.analyze_recording(path)
             m = metrics[str(percent)]
             split = f"{m['split_hz']:.0f} Hz" if m["split_hz"] is not None else "-"
+            beat = "BEAT" if m.get("beat_hz") is not None else ""
             print(f"  {percent:>2} %: tonality {m['tonality_db']:>6.1f} dB  "
                   f"band {m['band_db']:>7.2f} dB  split {split:>8}  "
-                  f"peak {m['peak_hz']:.0f} Hz  ({m['blocks']} blocks)",
+                  f"peak {m['peak_hz']:.0f} Hz  {beat:>4} ({m['blocks']} blocks)",
                   flush=True)
         except (ValueError, wave.Error) as exc:
             print(f"  {percent:>2} %: analysis failed ({exc})", file=sys.stderr)
     if not metrics:
         return
     ranking = aa.rank_steps(metrics)
-    print(f"\nquietest first (by tonality in {band_desc}):")
+    print(f"\nquietest first (beating parks last, then tonality in "
+          f"{band_desc}):")
     print("  " + "  >  ".join(f"{label} %" for label, _ in ranking))
     winner = ranking[0][0]
     baseline = metrics.get("25")
