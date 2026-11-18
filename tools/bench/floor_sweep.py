@@ -50,6 +50,7 @@ SETTLE_S = 6.0                        # reload + spool-up before sampling
 SAMPLE_S = 2.0
 RECORD_S = 30.0                       # audio per step (record mode)
 CAPTURE_RATE = 16000
+FIRST_SETTLE_S = 20.0                 # spool-down from the pre-sweep profile
 ABORT_CPU_C = 75.0                    # guard thread owns anything hotter
 RESULTS = os.path.join(HERE, "results")
 ROWS_PATH = os.path.join(RESULTS, "floor-sweep.jsonl")
@@ -156,7 +157,21 @@ def main() -> int:
                         help="skip mic capture and spectral ranking")
     parser.add_argument("--record-s", type=float, default=RECORD_S,
                         help=f"audio seconds per step (default {RECORD_S:.0f})")
+    parser.add_argument("--steps", type=str, default="",
+                        help="comma list of percents to A/B, e.g. 25,28,30 "
+                             f"(default {STEPS[0]}..{STEPS[-1]})")
     args = parser.parse_args()
+    if args.steps:
+        try:
+            steps = tuple(sorted({int(s) for s in args.steps.split(",")}))
+        except ValueError:
+            print(f"bad --steps {args.steps!r}: comma integers expected")
+            return 2
+        if not steps or not all(1 <= s <= 100 for s in steps):
+            print("--steps out of range 1-100")
+            return 2
+    else:
+        steps = STEPS
 
     os.makedirs(RESULTS, exist_ok=True)
     cfg = appctl.load_cfg()
@@ -182,18 +197,22 @@ def main() -> int:
               "come back to an idle desktop")
         return 2
 
-    step_s = DWELL_S if recorder is None else SETTLE_S + args.record_s + 4.0
+    step_s = DWELL_S if recorder is None else SETTLE_S + args.record_s + 5.0
     recorded: dict[int, str] = {}
     try:
-        set_custom_percent(STEPS[0])
+        set_custom_percent(steps[0])
         mode = "listen + record" if recorder else "listen"
-        print(f"sweeping {STEPS[0]}..{STEPS[-1]} %, ~{step_s:.0f} s per step "
+        print(f"sweeping {steps[0]}..{steps[-1]} %, ~{step_s:.0f} s per step "
               f"({mode}); keep the desktop quiet", flush=True)
         if recorder:
             print("tonality ranks the steps; mic AGC means absolute levels "
                   "are relative only", flush=True)
+        # First step must be acoustically clean: the pre-sweep profile's fan
+        # duty needs spool-down time (run 2 recorded its 25 % step while the
+        # fans were still at the Gaming profile's ~2200 RPM).
+        time.sleep(FIRST_SETTLE_S)
         with open(ROWS_PATH, "a", encoding="utf-8") as rows:
-            for percent in STEPS:
+            for percent in steps:
                 raw = math.ceil(percent / 100.0 * 227)
                 print(f"  >>> now playing {percent:>2} % (raw {raw:>3}) - "
                       "listen", flush=True)
@@ -202,7 +221,8 @@ def main() -> int:
                 rpm_seen: list[int] = []
                 # Probe RPMs first (nvidia-smi spawns are audible clicks the
                 # median analysis would have to reject), then pure audio.
-                for _ in range(2):
+                # Three samples: one decode glitch must not break the median.
+                for _ in range(3):
                     row = probe.sample_once()
                     row["step_percent"] = percent
                     row["phase"] = "listen"
