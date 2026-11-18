@@ -112,7 +112,12 @@ class FeedforwardCycleTests(unittest.TestCase):
 
     def test_power_rises_curve_target(self):
         cfg = {"fan_mode": "auto", "cpu_fan_table": CURVE, "gpu_fan_table": CURVE,
-               "gpu_power_feedforward": True}
+               "gpu_power_feedforward": True,
+               # The baseline case parks both channels on the same beat-zone
+               # duty (curve 45 degC -> 10 % -> raw 57), which anti-beat
+               # detune legitimately reshapes; this test verifies feed-
+               # forward, so disable shaping to keep the contrast pure.
+               "anti_beat_detune": False}
         state_base, svc_base = self._make_service(dict(cfg))
         state_ff, svc_ff = self._make_service(dict(cfg))
 

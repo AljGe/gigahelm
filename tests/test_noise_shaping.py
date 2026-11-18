@@ -32,10 +32,26 @@ CURVE = [[40, 0], [50, 20], [60, 40], [70, 60]]
 class AntiBeatDetuneTests(unittest.TestCase):
     def test_equal_floor_targets_get_gpu_lifted(self):
         # The silent-mode park: both channels on the 25 % floor.
-        self.assertEqual(anti_beat_detune(25, 25), (25, 27))
+        self.assertEqual(anti_beat_detune(25, 25), (25, 29))
 
-    def test_equal_moderate_targets_get_gpu_lifted(self):
-        self.assertEqual(anti_beat_detune(30, 30), (30, 32))
+    def test_floor_clamped_parks_detune_in_effective_space(self):
+        # 1-25 % all write the same raw 57 park: equality and the raise
+        # must happen in EC-effective space or the detune writes raw 57
+        # again, i.e. nothing.
+        self.assertEqual(anti_beat_detune(20, 20), (20, 29))
+        self.assertEqual(anti_beat_detune(20, 24), (20, 29))
+        self.assertEqual(anti_beat_detune(1, 1), (1, 29))
+
+    def test_beat_zone_boundary(self):
+        self.assertEqual(anti_beat_detune(27, 27), (27, 31))
+
+    def test_self_separated_parks_not_detuned(self):
+        # From raw 64 the fans sit ~250 Hz apart on their own; shifting one
+        # would drag the pair back into the roughness band (sweep
+        # 2026-11-18).
+        self.assertEqual(anti_beat_detune(28, 28), (28, 28))
+        self.assertEqual(anti_beat_detune(30, 30), (30, 30))
+        self.assertEqual(anti_beat_detune(40, 40), (40, 40))
 
     def test_unequal_targets_untouched(self):
         self.assertEqual(anti_beat_detune(25, 0), (25, 0))
@@ -45,11 +61,6 @@ class AntiBeatDetuneTests(unittest.TestCase):
     def test_never_lowered(self):
         # A higher GPU target passes through; detune only ever raises.
         self.assertEqual(anti_beat_detune(25, 40), (25, 40))
-
-    def test_above_tonal_band_untouched(self):
-        # Broadband noise dominates high duties; no detune, no cap upset.
-        self.assertEqual(anti_beat_detune(50, 50), (50, 50))
-        self.assertEqual(anti_beat_detune(100, 100), (100, 100))
 
     def test_detune_must_exceed_hysteresis_band(self):
         # band is 2 %; a 1-point offset would be swallowed by next_target.
@@ -165,27 +176,30 @@ class ShapingCycleTests(unittest.TestCase):
         return cfg
 
     def test_equal_targets_detuned_in_cycle(self):
-        # cpu 60 degC -> 40 %, gpu 60 degC -> 40 %: equal spinning duties
-        # leave the cycle with the GPU channel two points higher.
+        # cpu 50 degC -> 20 %, gpu 50 degC -> 20 %: both map to the raw 57
+        # park, so the cycle must raise the GPU channel to effective 29
+        # (raw 66). Two cycles: the first is the staggered start surge,
+        # the second runs the shaped steady state.
         state, svc = self._make_service(self._profile())
-        svc.wmi_interface = FakeWMI(cpu_temp=60.0, gpu_temp=60.0)
+        svc.wmi_interface = FakeWMI(cpu_temp=50.0, gpu_temp=50.0)
+        self._run_cycle(svc)
         self._run_cycle(svc)
         apply_params = svc.wmi_interface.applies[-1]
-        self.assertEqual(apply_params["cpu_duty_raw"],
-                         float(percent_to_raw(40)))
+        self.assertEqual(apply_params["cpu_duty_raw"], float(percent_to_raw(20)))
         self.assertEqual(apply_params["gpu_duty_raw"],
-                         float(percent_to_raw(42)))
+                         float(percent_to_raw(29)))
 
     def test_detune_flag_off_restores_identical_duties(self):
         state, svc = self._make_service(
             self._profile(anti_beat_detune=False))
-        svc.wmi_interface = FakeWMI(cpu_temp=60.0, gpu_temp=60.0)
+        svc.wmi_interface = FakeWMI(cpu_temp=50.0, gpu_temp=50.0)
+        self._run_cycle(svc)
         self._run_cycle(svc)
         apply_params = svc.wmi_interface.applies[-1]
         self.assertEqual(apply_params["cpu_duty_raw"],
                          apply_params["gpu_duty_raw"])
         self.assertEqual(apply_params["gpu_duty_raw"],
-                         float(percent_to_raw(40)))
+                         float(percent_to_raw(20)))
 
     def test_one_sided_burst_gets_assisted(self):
         # cpu 70 degC -> 60 %, gpu 55 degC -> 30 %: the cool spinning GPU
