@@ -10,6 +10,13 @@ drives BOTH fans through the park band in 1 % steps while the desktop idles
 so the ear can pick the quietest parking duty; the winner then replaces the
 25 % floor points in the active curves (and any FAN_PERCENT_MIN_SPIN bump).
 
+Each step is also RECORDED through the laptop mic (sounddevice, 16 kHz
+mono, needs `pip install sounddevice`; disable with --no-record) and
+spectrally scored by acoustic_analysis.py: tonal prominence in the
+2.5-5.5 kHz blade-pass band, band energy, and the two-fan beat split.
+Tonality is amplitude-scale-invariant (mic gain/AGC cannot bias it), so it
+ranks the steps; use your ears to confirm the winner.
+
 The app stays alive the whole time (custom mode = its control loop keeps
 writing, heartbeat stays fresh, the thermal-guard thread and the external
 BIOS-revert watchdog stay armed). Each step is a config write + --minimized
@@ -17,18 +24,17 @@ reload, the established appctl pattern.
 
 Run ELEVATED from the user's terminal, desktop quiet:
     .venv\\Scripts\\python.exe -X utf8 tools\\bench\\floor_sweep.py
-
-Judge each step by ear. The JSONL log records RPM per step so tonal
-instability (hunting) shows up as RPM jitter alongside what you hear.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
 import statistics
 import sys
 import time
+import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -42,6 +48,8 @@ STEPS = tuple(range(25, 34))          # 25 % .. 33 % -> raw 57 .. 75
 DWELL_S = 45.0                        # listen window per step
 SETTLE_S = 6.0                        # reload + spool-up before sampling
 SAMPLE_S = 2.0
+RECORD_S = 30.0                       # audio per step (record mode)
+CAPTURE_RATE = 16000
 ABORT_CPU_C = 75.0                    # guard thread owns anything hotter
 RESULTS = os.path.join(HERE, "results")
 ROWS_PATH = os.path.join(RESULTS, "floor-sweep.jsonl")
@@ -68,7 +76,88 @@ def restore(previous: str, prev_mode: str) -> None:
     print(f"restored profile: {previous}")
 
 
+def setup_recorder():
+    """Return a sounddevice module handle, or None when unavailable."""
+    try:
+        import sounddevice as sd  # optional bench dependency (no numpy use)
+    except ImportError:
+        return None
+    try:
+        if sd.query_devices(kind="input") is None:
+            return None
+    except Exception:
+        return None
+    return sd
+
+
+def record_step(sd, percent: int, seconds: float) -> str:
+    """Capture one step's audio to results/floor-sweep-NNpct.wav."""
+    path = os.path.join(RESULTS, f"floor-sweep-{percent:02d}pct.wav")
+    overflowed = False
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(CAPTURE_RATE)
+        stream = sd.RawInputStream(samplerate=CAPTURE_RATE, channels=1,
+                                   dtype="int16", blocksize=CAPTURE_RATE)
+        stream.start()
+        deadline = time.time() + seconds
+        try:
+            while time.time() < deadline:
+                data, of = stream.read(CAPTURE_RATE)
+                overflowed |= bool(of)
+                wav.writeframes(bytes(data))
+        finally:
+            stream.stop()
+            stream.close()
+    if overflowed:
+        print("      (capture overflowed - some samples dropped)",
+              file=sys.stderr)
+    return path
+
+
+def analyze_recordings(recorded: dict, band_desc: str = "2.5-5.5 kHz") -> None:
+    """Score every recorded step, print the quietest-first ranking."""
+    import acoustic_analysis as aa
+
+    metrics = {}
+    for percent, path in sorted(recorded.items()):
+        try:
+            metrics[str(percent)] = aa.analyze_recording(path)
+            m = metrics[str(percent)]
+            split = f"{m['split_hz']:.0f} Hz" if m["split_hz"] is not None else "-"
+            print(f"  {percent:>2} %: tonality {m['tonality_db']:>6.1f} dB  "
+                  f"band {m['band_db']:>7.2f} dB  split {split:>8}  "
+                  f"peak {m['peak_hz']:.0f} Hz  ({m['blocks']} blocks)",
+                  flush=True)
+        except (ValueError, wave.Error) as exc:
+            print(f"  {percent:>2} %: analysis failed ({exc})", file=sys.stderr)
+    if not metrics:
+        return
+    ranking = aa.rank_steps(metrics)
+    print(f"\nquietest first (by tonality in {band_desc}):")
+    print("  " + "  >  ".join(f"{label} %" for label, _ in ranking))
+    winner = ranking[0][0]
+    baseline = metrics.get("25")
+    if baseline is not None and winner != "25":
+        w = metrics[winner]
+        print(f"sweep suggests parking at {winner} % instead of 25 % "
+              f"(tonality {w['tonality_db']:.1f} vs "
+              f"{baseline['tonality_db']:.1f} dB) - confirm by ear")
+    with open(os.path.join(RESULTS, "floor-sweep-audio-summary.json"),
+              "w", encoding="utf-8") as fh:
+        json.dump({"metrics": metrics,
+                   "ranking": [label for label, _ in ranking]}, fh, indent=2)
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--no-record", action="store_true",
+                        help="skip mic capture and spectral ranking")
+    parser.add_argument("--record-s", type=float, default=RECORD_S,
+                        help=f"audio seconds per step (default {RECORD_S:.0f})")
+    args = parser.parse_args()
+
     os.makedirs(RESULTS, exist_ok=True)
     cfg = appctl.load_cfg()
     previous = cfg.get("active_profile_name", "")
@@ -78,6 +167,13 @@ def main() -> int:
     prev_mode = str(cfg.get("profiles", {}).get(previous, {})
                     .get("fan_mode", "auto"))
 
+    recorder = None
+    if not args.no_record:
+        recorder = setup_recorder()
+        if recorder is None:
+            print("sounddevice/mic unavailable - falling back to ears-only "
+                  "(pip install sounddevice for spectral ranking)")
+
     probe = ECProbe()
     probe.connect()
     first = probe.sample_once()
@@ -86,10 +182,16 @@ def main() -> int:
               "come back to an idle desktop")
         return 2
 
+    step_s = DWELL_S if recorder is None else SETTLE_S + args.record_s + 4.0
+    recorded: dict[int, str] = {}
     try:
         set_custom_percent(STEPS[0])
-        print(f"sweeping {STEPS[0]}..{STEPS[-1]} %, {DWELL_S:.0f} s per step; "
-              "listen and note the quiet steps", flush=True)
+        mode = "listen + record" if recorder else "listen"
+        print(f"sweeping {STEPS[0]}..{STEPS[-1]} %, ~{step_s:.0f} s per step "
+              f"({mode}); keep the desktop quiet", flush=True)
+        if recorder:
+            print("tonality ranks the steps; mic AGC means absolute levels "
+                  "are relative only", flush=True)
         with open(ROWS_PATH, "a", encoding="utf-8") as rows:
             for percent in STEPS:
                 raw = math.ceil(percent / 100.0 * 227)
@@ -98,8 +200,9 @@ def main() -> int:
                 set_custom_percent(percent)
                 time.sleep(SETTLE_S)
                 rpm_seen: list[int] = []
-                deadline = time.time() + DWELL_S
-                while time.time() < deadline:
+                # Probe RPMs first (nvidia-smi spawns are audible clicks the
+                # median analysis would have to reject), then pure audio.
+                for _ in range(2):
                     row = probe.sample_once()
                     row["step_percent"] = percent
                     row["phase"] = "listen"
@@ -107,6 +210,9 @@ def main() -> int:
                     rows.flush()
                     rpm_seen.append(row["rpm1"])
                     time.sleep(SAMPLE_S)
+                if recorder is not None:
+                    path = record_step(recorder, percent, args.record_s)
+                    recorded[percent] = path
                 median_rpm = statistics.median(rpm_seen) if rpm_seen else -1
                 spread = (max(rpm_seen) - min(rpm_seen)) if len(rpm_seen) > 1 else 0
                 print(f"      {percent:>2} % (raw {raw:>3}): rpm median "
@@ -120,8 +226,12 @@ def main() -> int:
             except appctl.ApplyError as exc:
                 print(f"FAILED to restore {previous!r}: {exc} - "
                       "re-apply it manually", file=sys.stderr)
-    print("pick the step that sounded quietest; winners usually sit 1-3 raw "
-          "duty steps off the 57 floor")
+    if recorded:
+        print("\nspectral scoring of the recordings...", flush=True)
+        analyze_recordings(recorded)
+    else:
+        print("pick the step that sounded quietest; winners usually sit 1-3 raw "
+              "duty steps off the 57 floor")
     return 0
 
 
