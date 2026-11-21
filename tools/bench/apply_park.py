@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 
-CONFIG = r"C:\Tools\Gigahelm\control_config.json"
+CONFIG = os.path.join(os.environ.get("GIGAHELM_HOME", r"C:\Tools\Gigahelm"), "control_config.json")
 TASK = "Gigahelm Startup Task"
 NEW_PARK = 30
 

@@ -1,13 +1,22 @@
 @echo off
 rem Gigahelm bench chain - runs elevated via "Gigahelm Startup Task" action swap.
 rem Self-restores the original task action on every exit path.
+set "BENCH=%~dp0"
+set "ROOT=%BENCH%..\.."
+set "PY=%ROOT%\.venv\Scripts\python.exe"
+set "RESULTS=%BENCH%results"
+if not exist "%RESULTS%" mkdir "%RESULTS%"
+if not exist "%PY%" (
+  echo VENV-MISSING: create .venv and install deps first
+  exit /b 3
+)
 echo [1/3] EC probe
-C:\Users\REDACTED\AppData\Local\Temp\gfb-center\.venv\Scripts\python.exe -X utf8 C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\ec_probe.py --once > C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\results\probe-once.txt 2> C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\results\probe-once.err.txt
-C:\Users\REDACTED\AppData\Local\Temp\gfb-center\.venv\Scripts\python.exe -X utf8 C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\check_probe.py C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\results\probe-once.txt || goto :probe_fail
+"%PY%" -X utf8 "%BENCH%ec_probe.py" --once > "%RESULTS%\probe-once.txt" 2> "%RESULTS%\probe-once.err.txt"
+"%PY%" -X utf8 "%BENCH%check_probe.py" "%RESULTS%\probe-once.txt" || goto :probe_fail
 echo [2/3] selftest
-C:\Users\REDACTED\AppData\Local\Temp\gfb-center\.venv\Scripts\python.exe -X utf8 C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\bench.py --phase selftest > C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\results\selftest.log 2>&1 || goto :selftest_fail
+"%PY%" -X utf8 "%BENCH%bench.py" --phase selftest > "%RESULTS%\selftest.log" 2>&1 || goto :selftest_fail
 echo [3/3] bench small run (about 35-45 minutes, console stays quiet)
-C:\Users\REDACTED\AppData\Local\Temp\gfb-center\.venv\Scripts\python.exe -X utf8 C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\bench.py --phase all --power ac --quick --resume --reps 1 --duties 40,70,100 --out results/bench-small.jsonl > C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\results\bench-small.log 2>&1
+"%PY%" -X utf8 "%BENCH%bench.py" --phase all --power ac --quick --resume --reps 1 --duties 40,70,100 --out "%RESULTS%\bench-small.jsonl" > "%RESULTS%\bench-small.log" 2>&1
 set RC=%ERRORLEVEL%
 goto :restore
 :probe_fail
@@ -21,5 +30,5 @@ goto :restore
 :restore
 rem Task action was never modified (unelevated /Change was denied), so there
 rem is nothing to restore here - the original action is untouched on disk.
-echo CHAIN-DONE RC=%RC% > C:\Users\REDACTED\AppData\Local\Temp\gfb-center\tools\bench\results\chain-status.txt
+echo CHAIN-DONE RC=%RC% > "%RESULTS%\chain-status.txt"
 exit /b %RC%

@@ -17,9 +17,9 @@ import subprocess
 import sys
 import time
 
-CONFIG = r"C:\Tools\Gigahelm\control_config.json"
-EXE = r"C:\Tools\Gigahelm\Gigahelm.exe"
-INSTALL = r"C:\Tools\Gigahelm"
+INSTALL = os.environ.get("GIGAHELM_HOME", r"C:\Tools\Gigahelm")
+CONFIG = os.path.join(INSTALL, "control_config.json")
+EXE = os.path.join(INSTALL, "Gigahelm.exe")
 STARTUP_TASK = "Gigahelm Startup Task"
 
 HEARTBEAT = os.path.join(INSTALL, "heartbeat.state")

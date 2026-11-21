@@ -1,10 +1,12 @@
-# Requires elevation. Hands fans back to BIOS, replaces C:\Tools\Gigahelm,
-# migrates the old install's config/state and re-registers the startup task.
+# Requires elevation. Hands fans back to BIOS, replaces the install dir
+# (default C:\Tools\Gigahelm), migrates the old install's config/state and
+# re-registers the startup task.
+param([string]$InstallDir = "C:\Tools\Gigahelm")
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $false
 $taskName = "Gigahelm Startup Task"
 $legacyTaskName = "FanBatteryControl Startup Task"
-$install = "C:\Tools\Gigahelm"
+$install = $InstallDir
 $legacyInstall = "C:\Tools\GFBC"
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $sourceRoot "dist\Gigahelm"
