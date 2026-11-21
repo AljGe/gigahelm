@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Acoustic target shaping (core/noise_shaping.py).
 
-Pure-function cases pin the gates (upward-only, never wake a stopped fan,
-guard overlays win because shaping runs after selection); cycle cases prove
-the split path applies detune/assist before hysteresis and that disabling
+Pure-function cases pin the gates (upward-only, guard overlays win because
+shaping runs after selection); cycle cases prove the split path applies
+twin_wake/detune/assist before hysteresis and that disabling
 the profile flags restores the pre-shaping duties byte-for-byte."""
 import sys
 import tempfile
@@ -22,7 +22,9 @@ from core.fan_duty import percent_to_raw  # noqa: E402
 from core.path_manager import PathManager  # noqa: E402
 from core.state import AppState  # noqa: E402
 from core.app_services import AppServices  # noqa: E402
-from core.noise_shaping import anti_beat_detune, fan_load_assist  # noqa: E402
+from core.noise_shaping import (
+    anti_beat_detune, fan_load_assist, twin_wake,
+)  # noqa: E402
 import core.wmi_interface as wmi_module  # noqa: E402
 from config.settings import WMIInternalSignal  # noqa: E402
 
@@ -93,6 +95,31 @@ class FanLoadAssistTests(unittest.TestCase):
 
     def test_equal_targets_untouched(self):
         self.assertEqual(fan_load_assist(30, 30), (30, 30))
+
+
+class TwinWakeTests(unittest.TestCase):
+    def test_cpu_spinning_asleep_gpu_parked_at_floor(self):
+        # The silent-mode scenario: dGPU asleep (GPU channel target 0),
+        # CPU curve parks at 30 %. The GPU fan joins at the raw 57 floor.
+        self.assertEqual(twin_wake(30, 0), (30, 25))
+
+    def test_gpu_spinning_cold_cpu_parked_at_floor(self):
+        # Heavy GPU load, cold CPU: symmetric, CPU fan joins at the floor.
+        self.assertEqual(twin_wake(0, 60), (25, 60))
+
+    def test_both_stopped_stay_stopped(self):
+        # True idle: no fan spins, no noise, no spin-floor writes.
+        self.assertEqual(twin_wake(0, 0), (0, 0))
+
+    def test_both_spinning_untouched(self):
+        # detune/assist territory; wake must not re-lift a spinning pair.
+        self.assertEqual(twin_wake(30, 25), (30, 25))
+        self.assertEqual(twin_wake(45, 35), (45, 35))
+
+    def test_floor_clamped_request_counts_as_spinning(self):
+        # 1-24 % requests drive raw 57 (effective 25): judgement happens in
+        # EC-effective space, like every other stage.
+        self.assertEqual(twin_wake(15, 0), (15, 25))
 
 
 class FakeWMI:
@@ -222,13 +249,46 @@ class ShapingCycleTests(unittest.TestCase):
         self.assertEqual(apply_params["gpu_duty_raw"],
                          float(percent_to_raw(30)))
 
-    def test_asleep_gpu_channel_stays_zero(self):
-        state, svc = self._make_service(self._profile())
+    def test_asleep_gpu_channel_parked_at_spin_floor(self):
+        # The shipped Silent-profile scenario: cpu 65 degC parks at 30 %
+        # (spread to the floor park is below the assist trigger, so the
+        # park survives), gpu asleep (selection says 0). twin wake parks
+        # the stopped GPU fan at the 25 % floor - no lone spinner on the
+        # shared heatsink. Stall supervision stays suppressed while the
+        # dGPU is asleep.
+        state, svc = self._make_service(self._profile(
+            cpu_fan_table=[[50, 0], [60, 30], [95, 100]]))
+        svc.wmi_interface = FakeWMI(cpu_temp=60.0, gpu_temp=-1.0,
+                                    gpu_asleep=True)
+        self._run_cycle(svc)
+        apply_params = svc.wmi_interface.applies[-1]
+        self.assertEqual(apply_params["cpu_duty_raw"],
+                         float(percent_to_raw(30)))
+        self.assertEqual(apply_params["gpu_duty_raw"],
+                         float(percent_to_raw(25)))
+
+    def test_twin_wake_flag_off_keeps_asleep_gpu_zero(self):
+        state, svc = self._make_service(
+            self._profile(fan_twin_wake=False, anti_beat_detune=False,
+                          fan_load_assist=False))
         svc.wmi_interface = FakeWMI(cpu_temp=70.0, gpu_temp=-1.0,
                                     gpu_asleep=True)
         self._run_cycle(svc)
         apply_params = svc.wmi_interface.applies[-1]
         self.assertEqual(apply_params["gpu_duty_raw"], 0.0)
+
+    def test_cold_gpu_die_wake_then_assisted(self):
+        # cpu 70 -> 60 %, gpu 45 degC -> curve 0: twin wake parks the GPU
+        # channel at the floor, then assist lifts the now-spinning channel
+        # toward hot - margin (50), capped at +8 (33).
+        state, svc = self._make_service(self._profile())
+        svc.wmi_interface = FakeWMI(cpu_temp=70.0, gpu_temp=45.0)
+        self._run_cycle(svc)
+        apply_params = svc.wmi_interface.applies[-1]
+        self.assertEqual(apply_params["cpu_duty_raw"],
+                         float(percent_to_raw(60)))
+        self.assertEqual(apply_params["gpu_duty_raw"],
+                         float(percent_to_raw(33)))
 
     def test_mirrored_mode_not_shaped(self):
         state, svc = self._make_service(

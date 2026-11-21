@@ -102,6 +102,14 @@
         self._load({"fan_load_assist": False})
         self.assertIs(self.profile.get_value("fan_load_assist"), False)
 
+    def test_twin_wake_string_rejected(self):
+        self._load({"fan_twin_wake": "false"})
+        self.assertIs(self.profile.get_value("fan_twin_wake"), True)
+
+    def test_twin_wake_bool_passes_through(self):
+        self._load({"fan_twin_wake": False})
+        self.assertIs(self.profile.get_value("fan_twin_wake"), False)
+
 
 A hand-edited or corrupted config must never put the app into a non-
 converging state: unknown fan mode (zombie control loop), unmapped charge

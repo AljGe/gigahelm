@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """Acoustic target shaping for split fan control (auto mode only).
 
-Both stages are pure, upward-only target adjustments applied AFTER
+Three pure, upward-only target adjustments applied AFTER
 ``select_per_fan_targets`` (so thermal guards and fault overlays always win)
-and BEFORE per-channel target hysteresis. They never lower a channel, never
-wake a stopped channel, and never touch custom mode (one slider = one
-explicit duty for both channels).
+and BEFORE per-channel target hysteresis, in pipeline order
+``twin_wake`` -> ``anti_beat_detune`` -> ``fan_load_assist``. They never
+lower a channel and never touch custom mode (one slider = one explicit duty
+for both channels). ``twin_wake`` runs first and is the one deliberate
+wake of a stopped channel; the other two stages then only ever see fans
+that spin.
 
 Why this exists (AORUS 15P YD, 83-blade 12 V blowers, unified 5-heatpipe
 heatsink): the dominant silent-mode annoyance is a high-pitched whistle from
@@ -28,6 +31,7 @@ from config.settings import (
     ASSIST_MARGIN_PERCENT,
     ASSIST_MAX_RISE_PERCENT,
     ASSIST_MAX_TARGET_PERCENT,
+    TWIN_WAKE_FLOOR_PERCENT,
 )
 
 
@@ -97,3 +101,42 @@ def fan_load_assist(cpu_target: int, gpu_target: int,
         return cpu_target, gpu_target
     assisted = max(cool, min(hot - margin, cool + max_rise, max_target))
     return (cpu_target, assisted) if cpu_hot else (assisted, gpu_target)
+
+
+def twin_wake(cpu_target: int, gpu_target: int,
+              *,
+              floor: int = TWIN_WAKE_FLOOR_PERCENT,
+              ) -> Tuple[int, int]:
+    """Wake the stopped twin of a spinning fan: no lone spinners on the
+    shared heatsink.
+
+    ``fan_load_assist`` spreads one-sided load only across fans that already
+    spin; the gap it leaves is exactly the silent-mode scenario - dGPU
+    asleep (GPU channel target 0) while the CPU curve parks its fan at
+    30 % (raw 69). One spinning blower must then pull the whole fin stack's
+    airflow past its stalled sibling sitting in the shroud (higher
+    effective impedance), so the lone fan runs louder to move less air
+    than two low-RPM fans would. This stage parks the stopped channel at
+    ``floor`` (raw 57, the lowest stable park) whenever its sibling
+    spins: two blade-pass tones, each lower, self-separated (raw 57 vs the
+    spinning channel's >= raw 69 park), instead of one fan sweeping the
+    whistle band alone. The GPU-side airflow reaches the shared fin
+    array, so the woken fan buys real headroom for the hot die even when
+    its own die is cold or the dGPU is in D3cold.
+
+    Symmetric: it also parks the CPU channel when only the GPU fan spins
+    (heavy GPU load, cold CPU). The start-surge cost is paid once per
+    stop->spin transition - the same 57-raw surge the hot fan's own start
+    makes, and the cycle's staggered-start hold separates a same-tick
+    double start. The rule is deliberately duty-based and blind to WHY the
+    sibling is stopped (asleep latch, cold curve knee): selection stays
+    thermal truth, this is acoustic shaping. Runs first in the pipeline so
+    detune/assist only ever reason about spinning pairs.
+    """
+    cpu_effective = effective_percent(cpu_target)
+    gpu_effective = effective_percent(gpu_target)
+    if cpu_effective >= FAN_PERCENT_MIN_SPIN and gpu_effective == 0:
+        return cpu_target, floor
+    if gpu_effective >= FAN_PERCENT_MIN_SPIN and cpu_effective == 0:
+        return floor, gpu_target
+    return cpu_target, gpu_target

@@ -22,7 +22,7 @@ from .fan_target import (
 )
 from .thermal_guard import ThermalGuardWatchdog
 from .gpu_power import feedforward_offset
-from .noise_shaping import anti_beat_detune, fan_load_assist
+from .noise_shaping import anti_beat_detune, fan_load_assist, twin_wake
 from tools.localization import tr
 from config.settings import (
     FAN_MODE_BIOS, FAN_MODE_AUTO, FAN_MODE_CUSTOM, FAN_MODE_UNKNOWN,
@@ -759,10 +759,14 @@ class AppServices(QObject):
                     mode, custom_speed, cpu_base, gpu_base,
                     cpu_temp, gpu_temp, gpu_asleep,
                     self._cpu_guard_floor, self._gpu_guard_floor)
-                # Acoustic shaping (auto/split only): detune identical
-                # spinning duties past the blade-pass beat band and spread
-                # one-sided bursts across the shared heatsink. Both stages
-                # are upward-only; guard/fault overlays above are final.
+                # Acoustic shaping (auto/split only), upward-only; the
+                # guard/fault overlays above are final. twin_wake parks a
+                # stopped sibling at the spin floor so no fan spins alone
+                # on the shared heatsink; detune splits identical spinning
+                # parks past the blade-pass beat band; assist spreads
+                # one-sided bursts across both fans.
+                if self._current_profile.get_value("fan_twin_wake", True):
+                    cpu_target, gpu_target = twin_wake(cpu_target, gpu_target)
                 if self._current_profile.get_value("anti_beat_detune", True):
                     cpu_target, gpu_target = anti_beat_detune(cpu_target, gpu_target)
                 if self._current_profile.get_value("fan_load_assist", True):

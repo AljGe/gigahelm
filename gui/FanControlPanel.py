@@ -71,6 +71,13 @@ class FanControlPanel(BaseControlPanel):
         assist_row.addWidget(self.assist_checkbox)
         assist_row.addStretch(1)
         self.layout().addLayout(assist_row)
+        self.twin_wake_checkbox = QCheckBox(tr("twin_wake_checkbox_label"), self)
+        tooltip_manager.register(self.twin_wake_checkbox, "twin_wake_checkbox_tooltip")
+        twin_wake_row = QHBoxLayout()
+        twin_wake_row.setContentsMargins(0, 0, 0, 0)
+        twin_wake_row.addWidget(self.twin_wake_checkbox)
+        twin_wake_row.addStretch(1)
+        self.layout().addLayout(twin_wake_row)
 
     def _connect_live_signals(self) -> None:
         self.state.applied_fan_mode_changed.connect(self._on_live_changed)
@@ -89,6 +96,9 @@ class FanControlPanel(BaseControlPanel):
         self.assist_checkbox.toggled.connect(self._on_assist_toggled)
         self.state.active_profile_changed.connect(lambda *_: self._refresh_assist_checkbox())
         self._refresh_assist_checkbox()
+        self.twin_wake_checkbox.toggled.connect(self._on_twin_wake_toggled)
+        self.state.active_profile_changed.connect(lambda *_: self._refresh_twin_wake_checkbox())
+        self._refresh_twin_wake_checkbox()
 
     @Slot(bool)
     def _on_ff_toggled(self, checked: bool) -> None:
@@ -136,6 +146,17 @@ class FanControlPanel(BaseControlPanel):
         self.assist_checkbox.setChecked(checked)
         self.assist_checkbox.blockSignals(False)
 
+    @Slot(bool)
+    def _on_twin_wake_toggled(self, checked: bool) -> None:
+        self.profile_manager.set_profile_value("fan_twin_wake", checked)
+
+    def _refresh_twin_wake_checkbox(self) -> None:
+        profile = self.state.get_active_profile()
+        checked = bool(profile.get_value("fan_twin_wake", True)) if profile else True
+        self.twin_wake_checkbox.blockSignals(True)
+        self.twin_wake_checkbox.setChecked(checked)
+        self.twin_wake_checkbox.blockSignals(False)
+
     def _apply_enablement(self) -> None:
         super()._apply_enablement()
         # The cycle only applies the offset in auto mode.
@@ -164,7 +185,8 @@ class FanControlPanel(BaseControlPanel):
         # Detune/assist only act in split auto mode: custom mode drives both
         # channels with one slider, mirrored mode couples them.
         shaping_enabled = enabled and self.split_checkbox.isChecked()
-        for checkbox in (self.detune_checkbox, self.assist_checkbox):
+        for checkbox in (self.detune_checkbox, self.assist_checkbox,
+                         self.twin_wake_checkbox):
             checkbox.setEnabled(shaping_enabled)
             if shaping_enabled:
                 checkbox.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, False)
@@ -214,3 +236,4 @@ class FanControlPanel(BaseControlPanel):
         super().retranslate_ui()
         self.ff_checkbox.setText(tr("ff_checkbox_label"))
         self.split_checkbox.setText(tr("split_fan_checkbox_label"))
+        self.twin_wake_checkbox.setText(tr("twin_wake_checkbox_label"))

@@ -68,7 +68,7 @@ def _sanitize_profile_data(data: Dict[str, Any]) -> Dict[str, Any]:
             if len(points) >= MIN_CURVE_POINTS:
                 final[key] = points
         elif key in ("gpu_power_feedforward", "anti_beat_detune",
-                     "fan_load_assist"):
+                     "fan_load_assist", "fan_twin_wake"):
             if isinstance(value, bool):
                 final[key] = value
         else:

@@ -104,8 +104,10 @@ class SplitFanCycleTests(unittest.TestCase):
     def _run_cycle(self, svc):
         run_one_cycle(svc)
 
-    def test_split_on_cool_gpu_keeps_gpu_channel_off(self):
+    def test_split_on_cool_gpu_parks_channel_at_spin_floor(self):
         # cpu 55 degC -> CPU curve 30 %; gpu 40 degC -> GPU curve 0 %.
+        # twin wake (shipped default): the cool sibling joins at the 25 %
+        # minimum-spin park instead of sitting stalled in the airflow.
         cfg = {"fan_mode": "auto", "cpu_fan_table": CURVE, "gpu_fan_table": CURVE,
                "gpu_power_feedforward": False, "split_fan_control": True}
         state, svc = self._make_service(dict(cfg))
@@ -113,8 +115,9 @@ class SplitFanCycleTests(unittest.TestCase):
         self._run_cycle(svc)
         apply_params = svc.wmi_interface.applies[-1]
         self.assertEqual(apply_params["cpu_duty_raw"], float(percent_to_raw(30)))
-        self.assertEqual(apply_params["gpu_duty_raw"], 0.0)
-        self.assertEqual(state.get_applied_gpu_fan_percent(), 0)
+        self.assertEqual(apply_params["gpu_duty_raw"],
+                         float(percent_to_raw(25)))
+        self.assertEqual(state.get_applied_gpu_fan_percent(), 25)
 
     def test_split_off_mirrors_one_duty_to_both_channels(self):
         cfg = {"fan_mode": "auto", "cpu_fan_table": CURVE, "gpu_fan_table": CURVE,
@@ -142,7 +145,9 @@ class SplitFanCycleTests(unittest.TestCase):
         self.assertNotEqual(apply_params["cpu_duty_raw"],
                             apply_params["gpu_duty_raw"])
 
-    def test_split_on_asleep_gpu_keeps_gpu_channel_off(self):
+    def test_split_on_asleep_gpu_parks_channel_at_spin_floor(self):
+        # dGPU asleep: selection zeroes the channel, twin wake parks it at
+        # the 25 % floor beside the spinning CPU fan (no lone spinner).
         cfg = {"fan_mode": "auto", "cpu_fan_table": CURVE, "gpu_fan_table": CURVE,
                "gpu_power_feedforward": False, "split_fan_control": True}
         state, svc = self._make_service(dict(cfg))
@@ -150,11 +155,14 @@ class SplitFanCycleTests(unittest.TestCase):
         self._run_cycle(svc)
         apply_params = svc.wmi_interface.applies[-1]
         self.assertEqual(apply_params["cpu_duty_raw"], float(percent_to_raw(30)))
-        self.assertEqual(apply_params["gpu_duty_raw"], 0.0)
+        self.assertEqual(apply_params["gpu_duty_raw"],
+                         float(percent_to_raw(25)))
 
     def test_split_default_on_for_legacy_configs(self):
         # A config stored before the key existed gets the shipped default
-        # (split ON) via DEFAULT_PROFILE_SETTINGS / inline default.
+        # (split ON) via DEFAULT_PROFILE_SETTINGS / inline default: the GPU
+        # channel follows its own (cold) curve, twin-wake floor-parked
+        # beside the spinning CPU fan instead of mirroring the CPU duty.
         cfg = {"fan_mode": "auto", "cpu_fan_table": CURVE, "gpu_fan_table": CURVE,
                "gpu_power_feedforward": False}
         state, svc = self._make_service(dict(cfg))
@@ -162,7 +170,10 @@ class SplitFanCycleTests(unittest.TestCase):
         self._run_cycle(svc)
         apply_params = svc.wmi_interface.applies[-1]
         self.assertEqual(apply_params["cpu_duty_raw"], float(percent_to_raw(30)))
-        self.assertEqual(apply_params["gpu_duty_raw"], 0.0)
+        self.assertEqual(apply_params["gpu_duty_raw"],
+                         float(percent_to_raw(25)))
+        self.assertNotEqual(apply_params["cpu_duty_raw"],
+                            apply_params["gpu_duty_raw"])
 
 
 class FanRpmPairingTests(unittest.TestCase):

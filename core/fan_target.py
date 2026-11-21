@@ -110,7 +110,9 @@ def select_per_fan_targets(
     Fault/floor overlays apply per channel:
 
     - CPU channel: unreadable CPU temp forces ``FAULT_TARGET_BOTH``.
-    - GPU channel: a sleeping dGPU needs no airflow (0); an unreadable GPU
+    - GPU channel: a sleeping dGPU needs no airflow (0; the acoustic layer
+      may still park this channel at the spin floor - see
+      ``core.noise_shaping.twin_wake``); an unreadable GPU
       temp (awake) floors the channel at ``FAULT_TARGET_ONE``; otherwise the
       guard floor lifts the channel like ``select_fan_target`` does.
     """

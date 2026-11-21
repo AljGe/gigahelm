@@ -76,6 +76,7 @@ DEFAULT_PROFILE_SETTINGS: Dict[str, Any] = {
     "split_fan_control": True,
     "anti_beat_detune": True,
     "fan_load_assist": True,
+    "fan_twin_wake": True,
     "controller_update_interval_ms": DEFAULT_CONTROLLER_UPDATE_INTERVAL_MS,
     "min_display_temp_c": DEFAULT_MIN_DISPLAY_TEMP_C,
     "curve_point_picker_radius": DEFAULT_CURVE_POINT_PICKER_RADIUS,
@@ -288,6 +289,11 @@ ASSIST_TRIGGER_SPREAD_PERCENT: int = 10
 ASSIST_MARGIN_PERCENT: int = 10
 ASSIST_MAX_RISE_PERCENT: int = 8
 ASSIST_MAX_TARGET_PERCENT: int = 40
+# Twin wake: when one channel spins and its sibling is stopped (dGPU asleep
+# or its die below the curve knee), park the stopped channel at the 25 %
+# minimum-spin duty so the shared heatsink never runs on a lone fan. raw 57
+# is the lowest stable park; requests below it are fiction (percent_to_raw).
+TWIN_WAKE_FLOOR_PERCENT: int = 25
 # While the dGPU is latched asleep, re-probe the EC GPU sensors every Nth
 # sweep instead of parking for 19 (~12-20 s blind after a real wake). EC
 # register reads never touch NVML, so D3cold is unaffected.
