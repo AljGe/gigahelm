@@ -1,115 +1,5 @@
 # -*- coding: utf-8 -*-
 """Sanitization of untrusted profile data loaded from control_config.json.
-    # --- anti_beat_detune / fan_load_assist --------------------------------
-    def test_detune_string_rejected(self):
-        self._load({"anti_beat_detune": "false"})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
-
-    def test_detune_bool_passes_through(self):
-        self._load({"anti_beat_detune": False})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
-
-    def test_assist_string_rejected(self):
-        self._load({"fan_load_assist": "false"})
-        self.assertIs(self.profile.get_value("fan_load_assist"), True)
-
-    def test_assist_bool_passes_through(self):
-        self._load({"fan_load_assist": False})
-        self.assertIs(self.profile.get_value("fan_load_assist"), False)
-
-    # --- anti_beat_detune / fan_load_assist --------------------------------
-    def test_detune_string_rejected(self):
-        self._load({"anti_beat_detune": "false"})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
-
-    def test_detune_bool_passes_through(self):
-        self._load({"anti_beat_detune": False})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
-
-    def test_assist_string_rejected(self):
-        self._load({"fan_load_assist": "false"})
-        self.assertIs(self.profile.get_value("fan_load_assist"), True)
-
-    def test_assist_bool_passes_through(self):
-        self._load({"fan_load_assist": False})
-        self.assertIs(self.profile.get_value("fan_load_assist"), False)
-
-    # --- anti_beat_detune / fan_load_assist --------------------------------
-    def test_detune_string_rejected(self):
-        self._load({"anti_beat_detune": "false"})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
-
-    def test_detune_bool_passes_through(self):
-        self._load({"anti_beat_detune": False})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
-
-    def test_assist_string_rejected(self):
-        self._load({"fan_load_assist": "false"})
-        self.assertIs(self.profile.get_value("fan_load_assist"), True)
-
-    def test_assist_bool_passes_through(self):
-        self._load({"fan_load_assist": False})
-        self.assertIs(self.profile.get_value("fan_load_assist"), False)
-
-    # --- anti_beat_detune / fan_load_assist --------------------------------
-    def test_detune_string_rejected(self):
-        self._load({"anti_beat_detune": "false"})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
-
-    def test_detune_bool_passes_through(self):
-        self._load({"anti_beat_detune": False})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
-
-    def test_assist_string_rejected(self):
-        self._load({"fan_load_assist": "false"})
-        self.assertIs(self.profile.get_value("fan_load_assist"), True)
-
-    def test_assist_bool_passes_through(self):
-        self._load({"fan_load_assist": False})
-        self.assertIs(self.profile.get_value("fan_load_assist"), False)
-
-    # --- anti_beat_detune / fan_load_assist --------------------------------
-    def test_detune_string_rejected(self):
-        self._load({"anti_beat_detune": "false"})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
-
-    def test_detune_bool_passes_through(self):
-        self._load({"anti_beat_detune": False})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
-
-    def test_assist_string_rejected(self):
-        self._load({"fan_load_assist": "false"})
-        self.assertIs(self.profile.get_value("fan_load_assist"), True)
-
-    def test_assist_bool_passes_through(self):
-        self._load({"fan_load_assist": False})
-        self.assertIs(self.profile.get_value("fan_load_assist"), False)
-
-    # --- anti_beat_detune / fan_load_assist --------------------------------
-    def test_detune_string_rejected(self):
-        self._load({"anti_beat_detune": "false"})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
-
-    def test_detune_bool_passes_through(self):
-        self._load({"anti_beat_detune": False})
-        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
-
-    def test_assist_string_rejected(self):
-        self._load({"fan_load_assist": "false"})
-        self.assertIs(self.profile.get_value("fan_load_assist"), True)
-
-    def test_assist_bool_passes_through(self):
-        self._load({"fan_load_assist": False})
-        self.assertIs(self.profile.get_value("fan_load_assist"), False)
-
-    def test_twin_wake_string_rejected(self):
-        self._load({"fan_twin_wake": "false"})
-        self.assertIs(self.profile.get_value("fan_twin_wake"), True)
-
-    def test_twin_wake_bool_passes_through(self):
-        self._load({"fan_twin_wake": False})
-        self.assertIs(self.profile.get_value("fan_twin_wake"), False)
-
 
 A hand-edited or corrupted config must never put the app into a non-
 converging state: unknown fan mode (zombie control loop), unmapped charge
@@ -198,6 +88,31 @@ class ProfileValidationTests(unittest.TestCase):
     def test_feedforward_bool_passes_through(self):
         self._load({"gpu_power_feedforward": False})
         self.assertIs(self.profile.get_value("gpu_power_feedforward"), False)
+
+    # --- anti_beat_detune / fan_load_assist --------------------------------
+    def test_detune_string_rejected(self):
+        self._load({"anti_beat_detune": "false"})
+        self.assertIs(self.profile.get_value("anti_beat_detune"), True)
+
+    def test_detune_bool_passes_through(self):
+        self._load({"anti_beat_detune": False})
+        self.assertIs(self.profile.get_value("anti_beat_detune"), False)
+
+    def test_assist_string_rejected(self):
+        self._load({"fan_load_assist": "false"})
+        self.assertIs(self.profile.get_value("fan_load_assist"), True)
+
+    def test_assist_bool_passes_through(self):
+        self._load({"fan_load_assist": False})
+        self.assertIs(self.profile.get_value("fan_load_assist"), False)
+
+    def test_twin_wake_string_rejected(self):
+        self._load({"fan_twin_wake": "false"})
+        self.assertIs(self.profile.get_value("fan_twin_wake"), True)
+
+    def test_twin_wake_bool_passes_through(self):
+        self._load({"fan_twin_wake": False})
+        self.assertIs(self.profile.get_value("fan_twin_wake"), False)
 
     # --- valid data round-trips unchanged -----------------------------------
     def test_valid_full_dict_round_trips(self):

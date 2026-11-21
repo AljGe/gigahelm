@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core.fan_target import THERMAL_GUARDS  # noqa: E402
+from core.fan_target import THERMAL_GUARDS, guard_floor  # noqa: E402
 from core.thermal_guard import (  # noqa: E402
     DUTY_RAW_MAX, ThermalGuardWatchdog, force_duty_percent,
 )
@@ -32,29 +32,28 @@ class ForceDutyPercentTests(unittest.TestCase):
     def test_hot_and_below_floor_forces(self):
         self.assertEqual(force_duty_percent(91, 0), 80)      # experiment failure case
         self.assertEqual(force_duty_percent(91, 57), 80)     # EC min-spin floor
-        self.assertEqual(force_duty_percent(82, 57), 40)
-        self.assertEqual(force_duty_percent(86, 114), 60)
+        self.assertEqual(force_duty_percent(82, 57), 48)     # floor interpolates
+        self.assertEqual(force_duty_percent(86, 114), 64)
 
     def test_hot_and_at_floor_spares(self):
         self.assertIsNone(force_duty_percent(91, 182))       # 80 % already applied
-        self.assertIsNone(force_duty_percent(83, 100))       # 44 % >= floor 40 %
+        self.assertIsNone(force_duty_percent(83, 182))       # above the 52 % floor
         self.assertIsNone(force_duty_percent(96, 227))       # 100 %
 
     def test_unreadable_duty_forces_floor_while_hot(self):
         self.assertEqual(force_duty_percent(91, None), 80)
         self.assertEqual(force_duty_percent(91, -1), 80)
 
-    def test_engaged_floor_holds_inside_release_band(self):
-        # Mirrors guard_floor: a floor forced at 80 degC holds until the CPU
-        # cools to 77 degC, so integer sensor noise cannot pump the fans.
-        self.assertEqual(force_duty_percent(78.5, None, engaged_floor=40), 40)
-        self.assertEqual(force_duty_percent(77.0, None, engaged_floor=40), 40)
-        self.assertIsNone(force_duty_percent(76.9, None, engaged_floor=40))
-        self.assertEqual(force_duty_percent(82.5, None, engaged_floor=60), 60)
-        # Release band is [threshold - 3, threshold): 82.4 still holds the
-        # 60 % engagement; below 82 it releases and 40 % engages fresh.
-        self.assertEqual(force_duty_percent(82.4, None, engaged_floor=60), 60)
-        self.assertEqual(force_duty_percent(81.9, None, engaged_floor=60), 40)
+    def test_floor_matches_fan_target_everywhere(self):
+        # The watchdog must mirror guard_floor exactly or the two writers
+        # fight; continuous anchors leave no engagement state to diverge.
+        for tenth in range(700, 1001):
+            temp = tenth / 10
+            floor = guard_floor(temp)
+            if floor == 0:
+                self.assertIsNone(force_duty_percent(temp, 0))
+            else:
+                self.assertEqual(force_duty_percent(temp, 0), floor)
 
     def test_thresholds_match_fan_target(self):
         self.assertEqual(THERMAL_GUARDS, [(80.0, 40), (85.0, 60), (90.0, 80)])
@@ -62,10 +61,11 @@ class ForceDutyPercentTests(unittest.TestCase):
 
     def test_raw_conversion_matches_percent_to_raw(self):
         from core.fan_duty import percent_to_raw
-        # one degree below each floor's raw value must force that floor
-        for temp, percent in ((82, 40), (86, 60), (95, 80)):
-            self.assertEqual(force_duty_percent(temp, percent_to_raw(percent) - 1),
-                             percent)
+        # one raw unit below each anchor's duty must force that anchor floor
+        for temp, percent in ((80, 40), (85, 60), (90, 80), (95, 80)):
+            self.assertEqual(
+                force_duty_percent(temp, percent_to_raw(percent) - 1),
+                percent)
 
 
 class _FakeGetter:
@@ -213,6 +213,48 @@ class WatchdogBackoffTests(unittest.TestCase):
         self.watchdog._log("rotation test")
         self.assertTrue(os.path.exists(path + ".old"))
         self.assertLess(os.path.getsize(path), 512)
+
+class LoopAliveStanddownTests(unittest.TestCase):
+    """A freshly-cycling loop owns the EC; the guard bridges stalls only.
+
+    Measured 2026-11-19: with independent +-1-2 degC temperature samples the
+    loop and guard straddled the 80 degC knee ~820 times/day, each writing
+    duty 4-8 points apart. A fresh liveness mark silences the guard."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.getter = _FakeGetter()
+        self.setter = _FakeSetter()
+        self.age = {"v": None}
+
+    def _watchdog(self) -> ThermalGuardWatchdog:
+        watchdog = ThermalGuardWatchdog(self._tmp.name,
+                                        loop_alive=lambda: self.age["v"])
+        watchdog._owns_fans = lambda: True
+        return watchdog
+
+    def test_fresh_loop_silences_guard(self):
+        # 90 degC, EC at 0: the old behavior forces 80 % - with a liveness
+        # mark only 1 s old the loop owns it and nothing is written.
+        self.age["v"] = 1.0
+        watchdog = self._watchdog()
+        self.assertEqual(watchdog._check_once(self.getter, self.setter),
+                         (None, None))
+        self.assertEqual(self.setter.calls, [])
+
+    def test_stale_loop_lets_guard_force(self):
+        self.age["v"] = 30.0
+        watchdog = self._watchdog()
+        self.assertEqual(watchdog._check_once(self.getter, self.setter),
+                         (80, None))
+        self.assertEqual(self.setter.calls.count("SetFixedFanSpeed"), 1)
+
+    def test_unknown_age_keeps_guard_armed(self):
+        # None = the loop never cycled (startup, WMI down): guard armed.
+        watchdog = self._watchdog()
+        self.assertEqual(watchdog._check_once(self.getter, self.setter),
+                         (80, None))
 
 
 if __name__ == "__main__":

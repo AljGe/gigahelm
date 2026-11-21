@@ -8,17 +8,21 @@ the last written duty), this thread still reads the CPU temperature every
 couple of seconds and forces the thermal-guard floor duty whenever the EC
 sits below it.
 
-The decision rule mirrors core/fan_target.select_fan_target, so a healthy
-control loop never fights this thread: it only ever writes what the loop
-would already have written. BIOS/emergency modes stand down (the EC owns the
-fans, or 100 % is latched).
+The decision rule mirrors core/fan_target.select_fan_target. While the
+control loop is cycling (its liveness marks are fresh, see ``loop_alive``)
+the loop owns the EC and this thread stands down completely - measured
+2026-11-19, two writers with independent +-1-2 degC temperature samples
+straddled the 80 degC knee ~820 times/day, each re-writing duty by 4-8
+points. This thread exists for the stall case: starved worker, dead
+cycles, stale heartbeat, EC latching the last written duty. BIOS/emergency
+modes stand down too (the EC owns the fans, or 100 % is latched).
 """
 from __future__ import annotations
 
 import os
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import pythoncom
 import wmi
@@ -29,13 +33,17 @@ from config.settings import (
     SET_AUTO_FAN_STATUS, SET_CUSTOM_FAN_SPEED, SET_CUSTOM_FAN_STATUS,
     SET_GPU_FAN_DUTY, SET_STEP_FAN_STATUS, SET_SUPER_QUIET,
 )
-from core.fan_target import GUARD_RELEASE_C, THERMAL_GUARDS
+from core.fan_target import THERMAL_GUARDS, guard_floor
 from core.fan_duty import percent_to_raw
 from tools.system_utils import set_thread_priority_above_normal
 
 #: EC duty word ceiling (percent_to_raw(100)).
 DUTY_RAW_MAX: float = 227.0
 DEFAULT_POLL_INTERVAL_S: float = 2.0
+#: A successful control cycle marks liveness; while the newest mark is
+#: within this window the loop owns the EC and the watchdog stands down.
+#: 5 s > one 1.5 s cycle + WMI slack, < the 8 s cycle-watchdog rebuild.
+LOOP_ALIVE_GRACE_S: float = 5.0
 #: Modes in which the app owns fan control; everywhere else we stand down.
 OWNING_MODES = ("auto", "custom")
 
@@ -43,28 +51,16 @@ OWNING_MODES = ("auto", "custom")
 def force_duty_percent(cpu_temp: Optional[float], fixed_raw: Optional[float],
                        duty_raw_max: float = DUTY_RAW_MAX,
                        thresholds: List[Tuple[float, int]] = THERMAL_GUARDS,
-                       engaged_floor: int = 0,
-                       release_c: float = GUARD_RELEASE_C
                        ) -> Optional[int]:
     """Guard floor duty (percent) to force, or None when all is well.
 
-    None when the temperature is unreadable or below every threshold (or
-    release hysteresis holds nothing), or the EC already sits at/above the
-    floor. An unreadable duty readback forces the floor - unknown is treated
-    as too low while hot. ``engaged_floor`` mirrors the engage/release rule of
-    core/fan_target.guard_floor so the watchdog never fights the loop.
+    Mirrors core/fan_target.guard_floor exactly (continuous anchors), so a
+    healthy control loop never fights this thread.  None when the
+    temperature is unreadable or below the first anchor, or the EC already
+    sits at/above the floor. An unreadable duty readback forces the floor -
+    unknown is treated as too low while hot.
     """
-    if cpu_temp is None:
-        return None
-    floor = 0
-    for threshold, minimum in thresholds:
-        if cpu_temp >= threshold:
-            floor = max(floor, minimum)
-    if engaged_floor:
-        for threshold, minimum in thresholds:
-            if minimum == engaged_floor and cpu_temp >= threshold - release_c:
-                floor = max(floor, engaged_floor)
-                break
+    floor = guard_floor(cpu_temp, thresholds) if cpu_temp is not None else 0
     if floor == 0:
         return None
     if fixed_raw is None or fixed_raw < 0:
@@ -81,7 +77,8 @@ class ThermalGuardWatchdog(threading.Thread):
                  get_class: str = DEFAULT_WMI_GET_CLASS,
                  set_class: str = DEFAULT_WMI_SET_CLASS,
                  poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
-                 duty_raw_max: float = DUTY_RAW_MAX):
+                 duty_raw_max: float = DUTY_RAW_MAX,
+                 loop_alive: Optional[Callable[[], Optional[float]]] = None):
         super().__init__(name="ThermalGuardWatchdog", daemon=True)
         self._base_dir = base_dir
         self._namespace = namespace
@@ -89,14 +86,19 @@ class ThermalGuardWatchdog(threading.Thread):
         self._set_class = set_class
         self._poll_interval_s = poll_interval_s
         self._duty_raw_max = duty_raw_max
+        # Seconds since the control loop's last successful cycle, or None
+        # when it never cycled. Fresh (<= LOOP_ALIVE_GRACE_S) = the loop is
+        # applying its own guard floors and this thread must not write at
+        # all; None/stale = bridge the gap with independent EC polls.
+        self._loop_alive = loop_alive
         self._last_mode_path = os.path.join(base_dir, LAST_MODE_FILENAME)
         self._stop_event = threading.Event()
-        # Dual-purpose per-channel state: the last floor this thread forced
-        # on that channel. It throttles same-or-lower re-forces to one write
-        # per 10 s (a higher floor forces immediately) and carries
-        # engage/release hysteresis: the floor holds until the die cools
-        # GUARD_RELEASE_C below its engage threshold, so integer sensor noise
-        # at 80/85/90 degC cannot pump the fans.
+        # Per-channel memory of the last floor this thread forced. It
+        # throttles same-or-lower re-forces to one write per 10 s (a higher
+        # floor forces immediately). The floor curve itself is continuous
+        # (core/fan_target.guard_floor), so there is no engage/release state
+        # to carry - the 2026-11-19 night run measured the old stepwise
+        # release band pumping 60<->80 % at the thermal ceiling.
         self._last_force_monotonic_cpu: float = 0.0
         self._last_force_monotonic_gpu: float = 0.0
         self._last_forced_floor_cpu: int = 0
@@ -182,22 +184,20 @@ class ThermalGuardWatchdog(threading.Thread):
         ``readback_name`` is only read after the temperature alone demands a
         floor, mirroring the original CPU channel's lazy EC access.
         """
-        engaged = self._last_forced_floor_gpu if gpu else self._last_forced_floor_cpu
-        floor = force_duty_percent(temp, None, self._duty_raw_max,
-                                   engaged_floor=engaged)
+        floor = force_duty_percent(temp, None, self._duty_raw_max)
         if floor is None:
-            # Cool past the release band: engagement ends, next engagement
-            # at the threshold forces immediately again.
+            # Cooled below the first anchor: the next engagement (and any
+            # re-force) is immediate again.
             if gpu:
                 self._last_forced_floor_gpu = 0
             else:
                 self._last_forced_floor_cpu = 0
             return None
         readback = self._call(getter, readback_name)
-        floor = force_duty_percent(temp, readback, self._duty_raw_max,
-                                   engaged_floor=engaged)
+        floor = force_duty_percent(temp, readback, self._duty_raw_max)
         if floor is None:
             return None  # hot but the EC already sits at/above the floor
+        engaged = self._last_forced_floor_gpu if gpu else self._last_forced_floor_cpu
         last_mono = self._last_force_monotonic_gpu if gpu else self._last_force_monotonic_cpu
         now = time.monotonic()
         if floor <= engaged and now - last_mono < 10.0:
@@ -223,6 +223,13 @@ class ThermalGuardWatchdog(threading.Thread):
         to cool, no airflow needed.
         """
         if not self._owns_fans():
+            return None, None
+        alive_s = self._loop_alive() if self._loop_alive is not None else None
+        if alive_s is not None and alive_s <= LOOP_ALIVE_GRACE_S:
+            # Fresh liveness mark: the loop owns the EC. Its own floors
+            # (same guard_floor curve) are already in the applied duty, and
+            # this thread's independent temperature sample can only fight
+            # them (2026-11-19: ~820 disagrees/day at the 80 degC knee).
             return None, None
         cpu_temp = self._call(getter, "getCpuTemp")
         cpu_forced = self._poll_channel(getter, setter, cpu_temp,

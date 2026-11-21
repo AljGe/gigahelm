@@ -12,43 +12,43 @@ from config.settings import (
     FAN_MODE_CUSTOM,
 )
 
-# (temperature °C, minimum duty %) - a curve may ask for less, safety wins.
+# (temperature °C, minimum duty %) anchors - a curve may ask for less,
+# safety wins.  The floor is continuous between anchors (see guard_floor);
+# the UI already draws this polyline, the controller now applies it.
 THERMAL_GUARDS: List[Tuple[float, int]] = [
     (80.0, 40),
     (85.0, 60),
     (90.0, 80),
 ]
 
-#: Engaged guard floors release only this many degC below their engage
-#: threshold.  EC temperatures are integers and the floors step by 20-40
-#: points while upward moves apply immediately, so engage/release at the same
-#: temperature lets ±1 degC sensor noise at 80/85/90 °C pump the fans.
-GUARD_RELEASE_C = 3.0
-
 FAULT_TARGET_BOTH = 80
 FAULT_TARGET_ONE = 40
 
 
-def guard_floor(temp: float, engaged_floor: int = 0,
-                thresholds: List[Tuple[float, int]] = THERMAL_GUARDS,
-                release_c: float = GUARD_RELEASE_C) -> int:
-    """This tick's guard floor with engage/release hysteresis.
+def guard_floor(temp: Optional[float],
+                thresholds: List[Tuple[float, int]] = THERMAL_GUARDS) -> int:
+    """Continuous thermal-guard floor in percent (0 below the first anchor).
 
-    Engages at a threshold; an already-engaged floor holds until the
-    temperature drops ``release_c`` below that floor's engage threshold.
-    ``engaged_floor`` is the floor returned for the previous tick (0 = none).
-    Unreadable temperatures release immediately - fault handling owns them.
+    Linear between the (temp, duty) anchors, flat at the top anchor.  The
+    anchors are the old stepwise tiers, and interpolation is never below the
+    old lower tier between them, so cooling is never reduced - only the step
+    discontinuities are gone.
+
+    Measured 2026-11-19 (flap_watch: 12x 30 s all-core bursts at fixed
+    40 %): the stepwise floors pumped 60<->80 % at the ~89-91 degC all-core
+    ceiling - 11 tier transitions in 660 s, 44 s median gap - because +-1
+    degC integer sensor noise crossed the 90 degC boundary and the 3 degC
+    release band let go again.  A continuous floor turns that into a +-4 %
+    duty wiggle that the 2 % target hysteresis and the up-glide absorb.
     """
-    floor = 0
-    for threshold, minimum in thresholds:
-        if temp >= threshold:
-            floor = max(floor, minimum)
-    if engaged_floor:
-        for threshold, minimum in thresholds:
-            if minimum == engaged_floor and temp >= threshold - release_c:
-                floor = max(floor, engaged_floor)
-                break
-    return floor
+    if not thresholds or temp is None:
+        return 0
+    if temp < thresholds[0][0]:
+        return 0
+    for (t0, d0), (t1, d1) in zip(thresholds, thresholds[1:]):
+        if temp < t1:
+            return int(round(d0 + (temp - t0) * (d1 - d0) / (t1 - t0)))
+    return int(thresholds[-1][1])
 
 
 def select_fan_target(
@@ -64,9 +64,8 @@ def select_fan_target(
     """Return the duty the EC should receive for this control tick.
 
     ``cpu_floor``/``gpu_floor`` are this tick's guard floors from
-    ``guard_floor`` (pass them when the caller tracks engagement).  ``None``
-    computes the stateless engage-only floor from the temperature, matching
-    the pre-hysteresis behavior.
+    ``guard_floor`` (pass them when the caller already computed them).
+    ``None`` computes the stateless floor from the temperature.
     """
     base = custom_speed if mode == FAN_MODE_CUSTOM else base_target
     cpu_bad = cpu_temp == TEMP_READ_ERROR_VALUE

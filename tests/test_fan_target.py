@@ -20,7 +20,9 @@ class FanTargetTests(unittest.TestCase):
         self.assertEqual(select_fan_target(FAN_MODE_CUSTOM, 10, 0, 90, 60), 80)
 
     def test_gpu_guard_raises_shared_duty(self):
-        self.assertEqual(select_fan_target(FAN_MODE_AUTO, 0, 5, 60, 86), 60)
+        # Continuous floor: 86 degC sits 1 degC into the 85-90 segment
+        # (60 % -> 80 %), i.e. 64 % at 4 points per degC.
+        self.assertEqual(select_fan_target(FAN_MODE_AUTO, 0, 5, 60, 86), 64)
 
     def test_both_sensors_failed_forces_eighty(self):
         self.assertEqual(
@@ -49,37 +51,46 @@ class FanTargetTests(unittest.TestCase):
 
 
 class GuardFloorTests(unittest.TestCase):
-    """Engage/release hysteresis for the thermal guards (see guard_floor)."""
+    """Continuous thermal-guard floor (see guard_floor)."""
 
     def test_cool_temp_has_no_floor(self):
         self.assertEqual(guard_floor(79.9), 0)
         self.assertEqual(guard_floor(TEMP_READ_ERROR_VALUE), 0)
 
-    def test_engages_at_threshold(self):
+    def test_anchors_are_inclusive(self):
         self.assertEqual(guard_floor(80.0), 40)
         self.assertEqual(guard_floor(85.0), 60)
         self.assertEqual(guard_floor(90.0), 80)
 
-    def test_engaged_floor_holds_inside_release_band(self):
-        # 78.5 degC is below every threshold, but the 40 % floor engaged at
-        # 80 degC must hold until 77 degC.
-        self.assertEqual(guard_floor(78.5, engaged_floor=40), 40)
-        self.assertEqual(guard_floor(77.0, engaged_floor=40), 40)
-        self.assertEqual(guard_floor(76.9, engaged_floor=40), 0)
+    def test_interpolates_between_anchors(self):
+        # 4 duty points per degC on both segments.
+        self.assertEqual(guard_floor(82.5), 50)
+        self.assertEqual(guard_floor(83.0), 52)
+        self.assertEqual(guard_floor(87.5), 70)
+        self.assertEqual(guard_floor(89.0), 76)
 
-    def test_higher_engagement_releases_at_its_own_threshold(self):
-        # Release band is [threshold - 3, threshold): 82.4 degC still holds
-        # the engaged 60 % floor over the freshly engaged 40 %; below 82 the
-        # engagement releases and 40 % takes over.
-        self.assertEqual(guard_floor(82.5, engaged_floor=60), 60)
-        self.assertEqual(guard_floor(82.4, engaged_floor=60), 60)
-        self.assertEqual(guard_floor(81.9, engaged_floor=60), 40)
-        self.assertEqual(guard_floor(87.5, engaged_floor=80), 80)
-        self.assertEqual(guard_floor(87.4, engaged_floor=80), 80)
-        self.assertEqual(guard_floor(86.9, engaged_floor=80), 60)
+    def test_flat_at_top_anchor(self):
+        self.assertEqual(guard_floor(91.0), 80)
+        self.assertEqual(guard_floor(120.0), 80)
 
-    def test_reengagement_while_engaged_takes_the_higher_floor(self):
-        self.assertEqual(guard_floor(91.0, engaged_floor=40), 80)
+    def test_never_below_the_old_stepwise_tier(self):
+        # The 2026-11-19 night run measured the stepwise tiers pumping
+        # 60<->80 % at the ~89-91 degC ceiling. Continuous floors may only
+        # ever add cooling between the old tiers, never remove it.
+        def old_tier(t: float) -> int:
+            return 40 if t < 85 else 60 if t < 90 else 80
+
+        for tenth in range(800, 1001):
+            temp = tenth / 10
+            self.assertGreaterEqual(guard_floor(temp), old_tier(temp),
+                                    msg=f"at {temp} degC")
+
+    def test_monotonic_in_temperature(self):
+        previous = 0
+        for tenth in range(700, 1001):
+            value = guard_floor(tenth / 10)
+            self.assertGreaterEqual(value, previous)
+            previous = value
 
 
 class SelectPerFanTargetsTests(unittest.TestCase):

@@ -44,6 +44,30 @@ def plateau_point(table, park_value):
     return [first[0] - 2, 0]
 
 
+def restart_and_verify() -> bool:
+    """Launch via the startup task and wait for a fresh heartbeat, one
+    retry. The first launch can race the killed instance's single-instance
+    mutex (seen 2026-11-18: apply_park's own launch never came up), so the
+    verify MUST precede the report - a report bug must not be able to skip
+    it again."""
+    for attempt in (1, 2):
+        subprocess.run(["schtasks", "/Run", "/TN", TASK], capture_output=True,
+                       timeout=20)
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                age = time.time() - os.path.getmtime(
+                    os.path.join(os.path.dirname(CONFIG), "heartbeat.state"))
+                if age < 10:
+                    print(f"app restarted, heartbeat fresh ({age:.1f}s)")
+                    return True
+            except OSError:
+                pass
+            time.sleep(2.0)
+        print(f"attempt {attempt}: heartbeat not fresh within 60s - retrying")
+    return False
+
+
 def main() -> int:
     try:
         probe = os.path.join(os.path.dirname(CONFIG), ".wtest")
@@ -80,7 +104,7 @@ def main() -> int:
             if ins is not None and not any(p[0] == ins[0] for p in table):
                 table.append(list(ins))
                 table.sort(key=lambda p: p[0])
-                changes.append((name, key, ins[0], "inserted 0 plateau"))
+                changes.append((name, key, ins[0], "inserted", "0 plateau"))
 
     if not changes:
         print("no park points to move - nothing to do")
@@ -94,26 +118,19 @@ def main() -> int:
         os.fsync(fh.fileno())
     os.replace(tmp, CONFIG)
 
-    subprocess.run(["schtasks", "/Run", "/TN", TASK], capture_output=True,
-                   timeout=20)
+    restarted = restart_and_verify()
 
     print(f"changed points (profile, table, temp, old, new); backup: {backup}")
     for row in changes:
         print(f"  {row[0]:8} {row[1]:14} [{row[2]} C] {row[3]} -> {row[4]}")
 
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        try:
-            age = time.time() - os.path.getmtime(
-                os.path.join(os.path.dirname(CONFIG), "heartbeat.state"))
-            if age < 10:
-                print(f"app restarted, heartbeat fresh ({age:.1f}s)")
-                return 0
-        except OSError:
-            pass
-        time.sleep(2.0)
-    print("WARNING: heartbeat not fresh within 60s - check the app")
-    return 1
+    if not restarted:
+        print("WARNING: app did not produce a fresh heartbeat - the external "
+              "watchdog will have reverted fan control to BIOS; relaunch via "
+              "'schtasks /Run /TN \"Gigahelm Startup Task\"' and re-apply "
+              "the profile")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

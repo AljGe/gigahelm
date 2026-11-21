@@ -99,6 +99,10 @@ class AppServices(QObject):
         self._gpu_ctrl_temp: Optional[float] = None
         self._cpu_guard_floor = 0
         self._gpu_guard_floor = 0
+        # Monotonic timestamp of the last successful control cycle; read by
+        # the thermal-guard thread (via _loop_alive_age_s) to stand down
+        # while the loop itself is applying the guard floors.
+        self._loop_alive_mono: float = 0.0
         self._fan1_stall_cycles = 0
         self._fan2_stall_cycles = 0
         self._fan_stall_reported = False
@@ -142,10 +146,11 @@ class AppServices(QObject):
         self._last_heartbeat_ms: float = 0.0
         self._write_heartbeat(force=True)
 
-        # Independent EC-level fail-safe: forces the guard floor duty when the
-        # CPU crosses a thermal threshold and the EC sits below it, even if
-        # this service's control cycles are stalled (see core/thermal_guard).
-        self._thermal_guard = ThermalGuardWatchdog(self.state.paths.base_dir)
+        # Independent EC-level fail-safe: bridges control-loop stalls by
+        # forcing the guard floor from its own EC polls - but stands down
+        # while the loop is cycling (see core/thermal_guard).
+        self._thermal_guard = ThermalGuardWatchdog(
+            self.state.paths.base_dir, loop_alive=self._loop_alive_age_s)
         self._thermal_guard.start()
 
         self._connect_to_state_signals()
@@ -745,10 +750,11 @@ class AppServices(QObject):
             # Guard floors key on RAW temps: the EMA lags load onset by a few
             # ticks, and a lagging floor let an under-floor duty through at
             # load onset (bench 2026-11-16: 26 % written at raw cpu 90 °C).
-            # guard_floor's engage/release band already debounces integer
-            # sensor noise, so the EMA buys nothing here.
-            self._cpu_guard_floor = guard_floor(cpu_temp, self._cpu_guard_floor)
-            self._gpu_guard_floor = guard_floor(gpu_temp, self._gpu_guard_floor)
+            # The floor curve is continuous (core/fan_target.guard_floor), so
+            # integer sensor noise becomes a +-4 % duty wiggle that the 2 %
+            # target hysteresis absorbs - no engage/release state to carry.
+            self._cpu_guard_floor = guard_floor(cpu_temp)
+            self._gpu_guard_floor = guard_floor(gpu_temp)
             # Split fan control: each EC channel follows its own die's curve.
             # Auto-mode only (the UI toggle is disabled outside auto); custom
             # mode keeps one slider driving both channels.
@@ -862,6 +868,7 @@ class AppServices(QObject):
             self._cycle_watchdog.stop()
             self._cycle_in_flight = False
             self._write_heartbeat()
+            self._mark_loop_alive()
             self.state.set_auto_fan_target_speed_percent(target)
         except Exception as e:
             self._cycle_watchdog.stop()
@@ -945,6 +952,7 @@ class AppServices(QObject):
             return
         self._cycles_since_flag_reassert = 0
         self._write_heartbeat()
+        self._mark_loop_alive()
         # 飞行中用户切到 BIOS：异步纠正刚写入的软件标志。
         if self.state.get_applied_fan_mode() == FAN_MODE_BIOS:
             self._request_bios_control(generation=self._mode_generation)
@@ -963,6 +971,18 @@ class AppServices(QObject):
             self.state.set_cpu_temp(TEMP_READ_ERROR_VALUE)
             self.state.set_gpu_temp(TEMP_READ_ERROR_VALUE)
         self.state.set_gpu_asleep(False)
+
+    def _mark_loop_alive(self) -> None:
+        """Successful control cycle: the loop owns the EC until this mark
+        goes stale (monotonic write is GIL-atomic for the guard thread)."""
+        self._loop_alive_mono = time.monotonic()
+
+    def _loop_alive_age_s(self) -> Optional[float]:
+        """Seconds since the last successful cycle, or None before the
+        first one (None keeps the thermal guard armed)."""
+        if self._loop_alive_mono <= 0.0:
+            return None
+        return time.monotonic() - self._loop_alive_mono
 
     def _on_cycle_watchdog(self):
         """周期超过 CYCLE_WATCHDOG_MS：worker 多半卡死在 COM 调用里。重建接口而不是冻结。"""

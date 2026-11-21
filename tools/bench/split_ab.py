@@ -32,17 +32,21 @@ Run ELEVATED from the repo root:
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import statistics
 import sys
 import time
+import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import acoustic_analysis
 import appctl
+import floor_sweep
 from ec_probe import ECProbe
 from loadgen import Burners, LOAD_N
 
@@ -53,16 +57,44 @@ RESULTS = os.path.join(HERE, "results")
 ARMS = (("mirrored", False), ("split", True))
 TRIALS = (("idle", 0), ("dual", 2), ("all", LOAD_N["all"]))
 METRICS = ("cpu_t", "gpu_t", "rpm1", "rpm2", "fixed_raw")
+#: Mic capture rides on the dual trials: that is the regime where the
+#: mirrored arm drives both fans at the same park duty (twin blade-pass)
+#: while the split arm runs the GPU fan off and the CPU fan alone.  Idle
+#: fans sit at 0 % in both arms, so there is nothing to hear there.
+MIC_AT_S = 45.0        # settled park, well before the steady window
+MIC_RECORD_S = floor_sweep.RECORD_S
+MIC_CAPTURE_RATE = floor_sweep.CAPTURE_RATE
 
 
 def rows_path(arm: str, trial: str) -> str:
     return os.path.join(RESULTS, f"split-ab-{arm}-{trial}.jsonl")
 
 
-def run_trial(probe: ECProbe, burners: Burners, arm: str, trial: str, n: int) -> None:
+def record_wav(sd, path: str, seconds: float) -> None:
+    """Capture mono 16-bit PCM through the laptop mic (16 kHz)."""
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(MIC_CAPTURE_RATE)
+        stream = sd.RawInputStream(samplerate=MIC_CAPTURE_RATE, channels=1,
+                                   dtype="int16", blocksize=MIC_CAPTURE_RATE)
+        stream.start()
+        deadline = time.time() + seconds
+        try:
+            while time.time() < deadline:
+                data, _overflowed = stream.read(MIC_CAPTURE_RATE)
+                wav.writeframes(bytes(data))
+        finally:
+            stream.stop()
+            stream.close()
+
+
+def run_trial(probe: ECProbe, burners: Burners, arm: str, trial: str, n: int,
+              mic: tuple | None = None) -> None:
     burners.start(n, DURATION)
     started = time.time()
     slow = 0
+    mic_done = False
     try:
         with open(rows_path(arm, trial), "w", encoding="utf-8") as fh:
             while time.time() - started < DURATION:
@@ -80,6 +112,13 @@ def run_trial(probe: ECProbe, burners: Burners, arm: str, trial: str, n: int) ->
                       f"cpu {sample['cpu_t']:5.1f} gpu {sample['gpu1']:5.1f} "
                       f"rpm1 {sample['rpm1']:5d} rpm2 {sample['rpm2']:5d} "
                       f"raw {sample['fixed_raw']:5.0f}", flush=True)
+                if mic is not None and not mic_done and sample["loop_t"] >= MIC_AT_S:
+                    mic_done = True
+                    sd_mod, wav_path = mic
+                    print(f"  [{arm}/{trial}] mic recording "
+                          f"{MIC_RECORD_S:.0f} s -> {os.path.basename(wav_path)}",
+                          flush=True)
+                    record_wav(sd_mod, wav_path, MIC_RECORD_S)
                 time.sleep(max(0.0, INTERVAL - (time.time() - mark)))
     finally:
         burners.stop()
@@ -114,9 +153,18 @@ def print_pair(trial: str, mirrored: dict, split: dict) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--mic", action="store_true",
+                        help="record the dual-trial park acoustics through "
+                             "the laptop mic and rank the arms "
+                             "(tonality/beat, acoustic_analysis)")
+    args = parser.parse_args()
     os.makedirs(RESULTS, exist_ok=True)
+    mic_sd = floor_sweep.setup_recorder() if args.mic else None
     cfg = appctl.load_cfg()
     original = cfg.get("active_profile_name", "Config 1")
+    original_split = bool(cfg.get("profiles", {}).get(original, {})
+                          .get("split_fan_control", True))
     appctl.ensure_app_running()
     appctl.apply_profile(original, "auto")
 
@@ -138,10 +186,36 @@ def main() -> int:
                 if not cooled:
                     print(f"  [{arm}/{trial}] wait_cool timed out; "
                           f"starting trial anyway", flush=True)
-                run_trial(probe, burners, arm, trial, n)
+                mic = None
+                if mic_sd is not None and trial == "dual":
+                    mic = (mic_sd, os.path.join(RESULTS,
+                                                f"split-ab-{arm}-{trial}.wav"))
+                run_trial(probe, burners, arm, trial, n, mic=mic)
                 pair[arm] = steady_medians(arm, trial)
             mirrored, split = pair["mirrored"], pair["split"]
             print_pair(trial, mirrored, split)
+            if mic_sd is not None and trial == "dual":
+                metrics: dict = {}
+                for arm_name in ("mirrored", "split"):
+                    wav_path = os.path.join(RESULTS,
+                                            f"split-ab-{arm_name}-{trial}.wav")
+                    try:
+                        metrics[arm_name] = acoustic_analysis.analyze_recording(
+                            wav_path)
+                    except Exception as exc:
+                        summary["notes"].append(
+                            f"acoustic {arm_name}: {exc!r}")
+                if len(metrics) == 2:
+                    ranking = acoustic_analysis.rank_steps(metrics)
+                    for label, m in ranking:
+                        print(f"  acoustic {label}: band {m['band_db']:.1f} dB, "
+                              f"tonality {m['tonality_db']:.1f} dB, "
+                              f"beat {m['beat_hz'] or '-'} Hz, "
+                              f"twin split {m['split_hz'] or '-'} Hz",
+                              flush=True)
+                    print(f"  acoustic quietest: {ranking[0][0]}", flush=True)
+                    summary["acoustic"] = {"trial": trial, "metrics": metrics,
+                                           "quietest": ranking[0][0]}
 
             verdict = "FAIL"
             if trial == "idle":
@@ -194,6 +268,16 @@ def main() -> int:
                 "mirrored": mirrored, "split": split, "verdict": verdict}
     finally:
         burners.stop()
+        # restore_active only re-activates the profile; put the A/B'd flag
+        # back first so the user's profile leaves the run exactly as it was.
+        try:
+            cfg = appctl.load_cfg()
+            if original in cfg.get("profiles", {}):
+                appctl.edit_profile(cfg, original,
+                                    split_fan_control=original_split)
+                appctl.save_cfg_atomic(cfg)
+        except Exception as exc:
+            print(f"split flag restore failed: {exc!r}", file=sys.stderr)
         appctl.restore_active(original)
 
     summary["pass"] = all_pass

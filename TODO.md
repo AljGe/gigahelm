@@ -70,6 +70,49 @@ Endurance: all-core median discharge 99.1 W → ~54 min from 90 % on battery.
    *more* annoying (longer mid-glide at moderate duty is the known tradeoff).
    If `UP_STEP_PERCENT = 10` still surges audibly, try 7; if it feels
    laggy on burst launches, the NVML feed-forward already leads — leave it.
+8. **Ladder inversion is guard-dominated under load (2026-11-19).** In the
+   night matrix every commanded duty 25-70 % ran an actual ~80 % under `all`/
+   `dual` (the guard floors own the ceiling), and all-core steady temps are
+   89-91 °C at any duty — so curve synthesis inverts to a flat ~89 % curve
+   ("Tuned AC/Battery") and validate FAILs the 86 °C cap. Do not derive
+   curves from guard-dominated rows; use idle/dual rows only, or fix the
+   derivation. The 2026-11-19 derived profiles were removed from the config.
+9. **Guard flap fix landed and deployed (verified 2026-11-19 07:45).** The
+   pre-fix flap_watch block measured the stepwise tiers pumping 60↔80 %
+   (21 duty steps ≥45 raw = 20 points, ceiling raw 182 = 80 %).
+   `guard_floor` is now continuous between the same anchors (80→40, 85→60,
+   90→80; never below the old tier in between). Post-deploy re-run: ceiling
+   raw 155 (68 %), max duty step 64 (was 91), steps ≥45 raw 15 (was 21),
+   ON-hot median duty 137 (was 182) at the same CPU temps — quieter and
+   smaller steps, no tier plateaus. Residual 40↔68 oscillation in the
+   synthetic burst block tracks the **EC CPU temp readback flapping**
+   (1 s samples: 86→63→72→87 °C; physically impossible; 117 vs 29 jumps
+   ≥15 °C pre/post, and the harness adds a second WMI client to the EC
+   mailbox). That is sensor/mailbox reality, not floor math — do NOT add
+   control filtering on synthetic evidence. Real-world check: use the
+   machine normally for a day, then count `thermal_guard.log` forces (should
+   be few and small). If audible surges persist, add asymmetric glitch
+   rejection to the floor temp path (fast up, bounded decay ~8 points/tick)
+   and mirror it in the watchdog. Bench metric updated: flap_watch now
+   reports `duty_steps` (event counts are meaningless with continuous
+   floors). Split A/B with mic (same night): split won the acoustic ranking
+   (dual band −77.8 vs −73.3 dB, GPU fan off, +0.0 °C CPU) — installed
+   Silent now runs `split_fan_control: true` (verified).
+
+10. **Guard stands down while the loop cycles (2026-11-19, second pass).**
+    A day of real use on the continuous floors still logged 820 CPU forces
+    (0 GPU): the loop and the guard sample CPU temperature independently,
+    ±1-2 °C apart, and straddle the 80 °C knee (loop reads 79 → curve duty
+    30 %, guard reads 81 → floor 44 %) — two masters, ~820 rewrites/day of
+    4-8 duty points. No readback slack can absorb a 0-vs-44 disagreement at
+    the anchor edge. Fix: the loop marks liveness on every successful cycle
+    (`_mark_loop_alive`); the watchdog stands down entirely while the mark
+    is fresh (`LOOP_ALIVE_GRACE_S = 5 s`) and only bridges real stalls
+    (starved worker, dead cycles, NameError-style failures — those never
+    mark). Unknown age (never cycled) keeps the guard armed. The deployed
+    build must show near-zero `thermal_guard.log` forces during normal use;
+    a burst of forces now means a genuine loop stall and pairs with
+    `cycle failed` lines in `control_loop.log`.
 
 ### Not worth optimizing (measured)
 
